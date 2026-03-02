@@ -40,7 +40,12 @@ func New(token string, p *agent.Pool, authorizedUserIDs []int64) (*Bot, error) {
 		log.Println("WARNING: No AUTHORIZED_USERS configured — bot is open to everyone")
 	}
 
-	return &Bot{api: api, pool: p, authorizedUsers: allowed}, nil
+	b := &Bot{api: api, pool: p, authorizedUsers: allowed}
+
+	// Wire up the notify callback so the agent pool can send async messages.
+	p.SetNotifyFunc(b.Reply)
+
+	return b, nil
 }
 
 // Run starts the long-polling update loop. It blocks until ctx is cancelled.
@@ -73,7 +78,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	if !b.isAuthorized(msg.From) {
 		log.Printf("unauthorized message from user %d (%s) in chat %d",
 			msg.From.ID, msg.From.UserName, chatID)
-		b.reply(chatID, "⛔ You are not authorized to use this bot.")
+		b.Reply(chatID, "⛔ You are not authorized to use this bot.")
 		return
 	}
 
@@ -89,7 +94,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	response, err := b.pool.SendMessage(ctx, chatID, msg.Text)
 	if err != nil {
 		log.Printf("agent error for chat %d: %v", chatID, err)
-		b.reply(chatID, "Sorry, something went wrong. Please try again.")
+		b.Reply(chatID, "Sorry, something went wrong. Please try again.")
 		return
 	}
 
@@ -97,7 +102,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		response = "(empty response)"
 	}
 
-	b.reply(chatID, response)
+	b.Reply(chatID, response)
 }
 
 func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
@@ -105,41 +110,52 @@ func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 
 	switch msg.Command() {
 	case "start":
-		b.reply(chatID,
+		b.Reply(chatID,
 			"👋 Hi! I'm a Copilot-powered assistant.\n\n"+
 				"Send me any message and I'll respond using GitHub Copilot.\n\n"+
 				"Commands:\n"+
 				"/reset — Clear conversation history\n"+
+				"/status — Show active task status\n"+
 				"/restart — Rebuild and reload the bot\n"+
 				"/help — Show this message")
 	case "reset":
 		if err := b.pool.ResetSession(ctx, chatID); err != nil {
 			log.Printf("reset error for chat %d: %v", chatID, err)
-			b.reply(chatID, "Failed to reset session. Please try again.")
+			b.Reply(chatID, "Failed to reset session. Please try again.")
 			return
 		}
-		b.reply(chatID, "Conversation cleared. Send a new message to start fresh.")
+		b.Reply(chatID, "Conversation cleared. Send a new message to start fresh.")
+	case "status":
+		summary, err := b.pool.GetTaskSummary()
+		if err != nil {
+			log.Printf("status error: %v", err)
+			b.Reply(chatID, "Failed to get task status.")
+			return
+		}
+		b.Reply(chatID, summary)
 	case "restart":
-		b.reply(chatID, "♻️ Rebuilding and restarting…")
+		b.Reply(chatID, "♻️ Rebuilding and restarting…")
 		ppid := os.Getppid()
 		if err := syscall.Kill(ppid, syscall.SIGUSR1); err != nil {
 			log.Printf("restart signal error: %v", err)
-			b.reply(chatID, fmt.Sprintf("Failed to signal supervisor (pid %d): %v", ppid, err))
+			b.Reply(chatID, fmt.Sprintf("Failed to signal supervisor (pid %d): %v", ppid, err))
 		}
 	case "help":
-		b.reply(chatID,
+		b.Reply(chatID,
 			"Available commands:\n"+
 				"/start — Welcome message\n"+
 				"/reset — Clear conversation history\n"+
+				"/status — Show active task status\n"+
 				"/restart — Rebuild and reload the bot\n"+
 				"/help — Show this message\n\n"+
 				"Just send any text message to chat with the AI.")
 	default:
-		b.reply(chatID, "Unknown command. Use /help to see available commands.")
+		b.Reply(chatID, "Unknown command. Use /help to see available commands.")
 	}
 }
 
-func (b *Bot) reply(chatID int64, text string) {
+// Reply sends a message to a Telegram chat. It is safe to call from any goroutine.
+func (b *Bot) Reply(chatID int64, text string) {
 	msg := tgbotapi.NewMessage(chatID, text)
 	if _, err := b.api.Send(msg); err != nil {
 		log.Printf("failed to send message to chat %d: %v", chatID, err)

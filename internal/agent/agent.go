@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,17 +23,23 @@ type sessionKey struct {
 
 // Pool manages multiple named agents and their Copilot sessions.
 type Pool struct {
-	client    *copilot.Client
-	store     *store.Store
-	configDir string
-	sessions  map[sessionKey]*copilot.Session
-	mu        sync.Mutex
-	apiServer *api.Server
+	client     *copilot.Client
+	store      *store.Store
+	configDir  string
+	sessions   map[sessionKey]*copilot.Session
+	mu         sync.Mutex
+	apiServer  *api.Server
+	notifyFunc func(chatID int64, text string) // callback to send messages to a chat
 }
 
 // SetAPIServer sets the API server used for broadcasting activity events.
 func (p *Pool) SetAPIServer(srv *api.Server) {
 	p.apiServer = srv
+}
+
+// SetNotifyFunc sets the callback used to send messages to a Telegram chat.
+func (p *Pool) SetNotifyFunc(fn func(chatID int64, text string)) {
+	p.notifyFunc = fn
 }
 
 // logActivity records an activity entry and broadcasts it to SSE clients.
@@ -357,4 +364,112 @@ func (p *Pool) CommentOnTask(agentName, taskID, comment string) error {
 	}
 	p.logActivity(agentName, "task_comment", comment, jsonMeta(map[string]string{"task_id": taskID}), 0)
 	return nil
+}
+
+// DelegateTask creates a task, assigns it to an agent, sends them instructions
+// in a background goroutine, and notifies the originating chat when complete.
+func (p *Pool) DelegateTask(ctx context.Context, fromAgent, toAgent string, chatID int64, projectID, taskID, title, instructions string, priority int) error {
+	// Create the task.
+	if err := p.CreateTask(fromAgent, projectID, taskID, title, instructions, priority); err != nil {
+		return fmt.Errorf("create task: %w", err)
+	}
+
+	// Assign it.
+	if err := p.AssignTask(fromAgent, taskID, toAgent); err != nil {
+		return fmt.Errorf("assign task: %w", err)
+	}
+
+	// Update status to in_progress.
+	if err := p.UpdateTaskStatus(fromAgent, taskID, "in_progress"); err != nil {
+		return fmt.Errorf("update task status: %w", err)
+	}
+
+	// Run the agent work asynchronously.
+	go func() {
+		workCtx := context.Background()
+		prompt := fmt.Sprintf("[Task Assignment: %s]\nTask ID: %s\nProject: %s\nPriority: %d\n\nInstructions:\n%s\n\nPlease complete this task. When done, summarize what you did.",
+			title, taskID, projectID, priority, instructions)
+
+		response, err := p.SendMessageBetween(workCtx, fromAgent, toAgent, chatID, prompt)
+		if err != nil {
+			log.Printf("delegate task %s to %s failed: %v", taskID, toAgent, err)
+			_ = p.UpdateTaskStatus(fromAgent, taskID, "backlog")
+			_ = p.CommentOnTask(fromAgent, taskID, fmt.Sprintf("delegation failed: %v", err))
+			if p.notifyFunc != nil {
+				p.notifyFunc(chatID, fmt.Sprintf("❌ Task %s failed to delegate to %s: %v", taskID, toAgent, err))
+			}
+			return
+		}
+
+		// Mark as review.
+		_ = p.UpdateTaskStatus(toAgent, taskID, "review")
+		_ = p.CommentOnTask(toAgent, taskID, response)
+
+		// Notify the originating chat.
+		if p.notifyFunc != nil {
+			summary := response
+			if len(summary) > 500 {
+				summary = summary[:500] + "…"
+			}
+			p.notifyFunc(chatID, fmt.Sprintf("✅ Task *%s* completed by %s:\n\n%s", title, toAgent, summary))
+		}
+	}()
+
+	return nil
+}
+
+// GetTaskSummary returns a formatted status report of active tasks.
+func (p *Pool) GetTaskSummary() (string, error) {
+	inProgress, err := p.store.ListTasks(store.TaskFilter{Status: "in_progress", Limit: 20})
+	if err != nil {
+		return "", err
+	}
+	review, err := p.store.ListTasks(store.TaskFilter{Status: "review", Limit: 20})
+	if err != nil {
+		return "", err
+	}
+	todo, err := p.store.ListTasks(store.TaskFilter{Status: "todo", Limit: 10})
+	if err != nil {
+		return "", err
+	}
+
+	if len(inProgress) == 0 && len(review) == 0 && len(todo) == 0 {
+		return "No active tasks.", nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("📊 *Task Status*\n\n")
+
+	if len(inProgress) > 0 {
+		sb.WriteString("🔨 *In Progress:*\n")
+		for _, t := range inProgress {
+			assignee := "unassigned"
+			if t.AssignedTo != nil {
+				assignee = *t.AssignedTo
+			}
+			sb.WriteString(fmt.Sprintf("  • %s → %s\n", t.Title, assignee))
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(review) > 0 {
+		sb.WriteString("👀 *In Review:*\n")
+		for _, t := range review {
+			assignee := "unassigned"
+			if t.AssignedTo != nil {
+				assignee = *t.AssignedTo
+			}
+			sb.WriteString(fmt.Sprintf("  • %s → %s\n", t.Title, assignee))
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(todo) > 0 {
+		sb.WriteString("📋 *Up Next:*\n")
+		for _, t := range todo {
+			sb.WriteString(fmt.Sprintf("  • %s\n", t.Title))
+		}
+	}
+
+	return sb.String(), nil
 }
