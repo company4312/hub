@@ -4,8 +4,9 @@ import { useActivityStream } from "./hooks/useActivityStream";
 import { AgentSidebar } from "./components/AgentSidebar";
 import { ActivityFeed } from "./components/ActivityFeed";
 import { MemoryPanel } from "./components/MemoryPanel";
+import { TaskBoard } from "./components/TaskBoard";
 
-type Tab = "activity" | "memories";
+type Tab = "activity" | "memories" | "tasks";
 
 export default function App() {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
@@ -29,19 +30,19 @@ export default function App() {
       />
 
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Tabs — shown when an agent is selected */}
-        {selectedAgent && (
-          <div className="flex border-b border-gray-800 bg-gray-900/80 shrink-0">
-            <button
-              onClick={() => setActiveTab("activity")}
-              className={`px-4 py-2 text-sm font-medium transition-colors ${
-                activeTab === "activity"
-                  ? "text-white border-b-2 border-blue-500"
-                  : "text-gray-400 hover:text-gray-200"
-              }`}
-            >
-              Activity
-            </button>
+        {/* Tabs */}
+        <div className="flex border-b border-gray-800 bg-gray-900/80 shrink-0">
+          <button
+            onClick={() => setActiveTab("activity")}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
+              activeTab === "activity"
+                ? "text-white border-b-2 border-blue-500"
+                : "text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            Activity
+          </button>
+          {selectedAgent && (
             <button
               onClick={() => setActiveTab("memories")}
               className={`px-4 py-2 text-sm font-medium transition-colors ${
@@ -52,11 +53,23 @@ export default function App() {
             >
               Memories
             </button>
-          </div>
-        )}
+          )}
+          <button
+            onClick={() => setActiveTab("tasks")}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
+              activeTab === "tasks"
+                ? "text-white border-b-2 border-blue-500"
+                : "text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            Tasks
+          </button>
+        </div>
 
         {/* Content */}
-        {activeTab === "memories" && selectedAgent ? (
+        {activeTab === "tasks" ? (
+          <TaskBoard agents={agents} />
+        ) : activeTab === "memories" && selectedAgent ? (
           <MemoryPanel agentName={selectedAgent} />
         ) : (
           <ActivityFeed

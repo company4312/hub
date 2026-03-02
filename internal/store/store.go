@@ -72,6 +72,12 @@ func New(dbPath string) (*Store, error) {
 		return nil, err
 	}
 
+	// Enable foreign key enforcement (off by default in SQLite).
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	if err := migrate(db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -269,6 +275,423 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		version: 5,
+		name:    "create task management tables",
+		run: func(tx *sql.Tx) error {
+			if _, err := tx.Exec(`
+				CREATE TABLE projects (
+					id          TEXT PRIMARY KEY,
+					name        TEXT NOT NULL,
+					description TEXT NOT NULL DEFAULT '',
+					status      TEXT NOT NULL DEFAULT 'active',
+					created_by  TEXT NOT NULL,
+					created_at  TEXT NOT NULL,
+					updated_at  TEXT NOT NULL
+				)
+			`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`
+				CREATE TABLE tasks (
+					id          TEXT PRIMARY KEY,
+					project_id  TEXT NOT NULL REFERENCES projects(id),
+					title       TEXT NOT NULL,
+					description TEXT NOT NULL DEFAULT '',
+					status      TEXT NOT NULL DEFAULT 'backlog',
+					assigned_to TEXT,
+					created_by  TEXT NOT NULL,
+					priority    INTEGER NOT NULL DEFAULT 3,
+					created_at  TEXT NOT NULL,
+					updated_at  TEXT NOT NULL
+				)
+			`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`CREATE INDEX idx_tasks_project ON tasks(project_id)`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`CREATE INDEX idx_tasks_status ON tasks(status)`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`CREATE INDEX idx_tasks_assigned ON tasks(assigned_to)`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`
+				CREATE TABLE task_dependencies (
+					task_id    TEXT NOT NULL REFERENCES tasks(id),
+					depends_on TEXT NOT NULL REFERENCES tasks(id),
+					PRIMARY KEY (task_id, depends_on)
+				)
+			`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`
+				CREATE TABLE task_comments (
+					id         INTEGER PRIMARY KEY AUTOINCREMENT,
+					task_id    TEXT NOT NULL REFERENCES tasks(id),
+					agent_name TEXT NOT NULL,
+					content    TEXT NOT NULL,
+					created_at TEXT NOT NULL
+				)
+			`); err != nil {
+				return err
+			}
+			_, err := tx.Exec(`CREATE INDEX idx_task_comments_task ON task_comments(task_id)`)
+			return err
+		},
+	},
+}
+
+// --- Project types ---
+
+// Project represents a project in the task management system.
+type Project struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	CreatedBy   string `json:"created_by"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+// ValidProjectStatuses is the allowed set of project statuses.
+var ValidProjectStatuses = map[string]bool{
+	"active":    true,
+	"completed": true,
+	"archived":  true,
+}
+
+// Task represents a task within a project.
+type Task struct {
+	ID          string  `json:"id"`
+	ProjectID   string  `json:"project_id"`
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	Status      string  `json:"status"`
+	AssignedTo  *string `json:"assigned_to"`
+	CreatedBy   string  `json:"created_by"`
+	Priority    int     `json:"priority"`
+	CreatedAt   string  `json:"created_at"`
+	UpdatedAt   string  `json:"updated_at"`
+}
+
+// ValidTaskStatuses is the allowed set of task statuses.
+var ValidTaskStatuses = map[string]bool{
+	"backlog":     true,
+	"todo":        true,
+	"in_progress": true,
+	"review":      true,
+	"done":        true,
+}
+
+// TaskFilter controls which tasks are returned by ListTasks.
+type TaskFilter struct {
+	ProjectID  string
+	Status     string
+	AssignedTo string
+	Limit      int
+}
+
+// TaskComment represents a comment on a task.
+type TaskComment struct {
+	ID        int64  `json:"id"`
+	TaskID    string `json:"task_id"`
+	AgentName string `json:"agent_name"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"created_at"`
+}
+
+// Field length limits for task management.
+const (
+	MaxTitleLength       = 200
+	MaxDescriptionLength = 2000
+	MaxCommentLength     = 1000
+	MaxListLimit         = 200
+)
+
+// --- Project CRUD ---
+
+// CreateProject inserts a new project.
+func (s *Store) CreateProject(p Project) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`
+		INSERT INTO projects (id, name, description, status, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, p.ID, p.Name, p.Description, p.Status, p.CreatedBy, now, now)
+	return err
+}
+
+// GetProject returns a project by ID, or nil if not found.
+func (s *Store) GetProject(id string) (*Project, error) {
+	var p Project
+	err := s.db.QueryRow(
+		"SELECT id, name, description, status, created_by, created_at, updated_at FROM projects WHERE id = ?", id,
+	).Scan(&p.ID, &p.Name, &p.Description, &p.Status, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// ListProjects returns all projects ordered by creation time descending.
+func (s *Store) ListProjects() ([]Project, error) {
+	rows, err := s.db.Query("SELECT id, name, description, status, created_by, created_at, updated_at FROM projects ORDER BY created_at DESC LIMIT ?", MaxListLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var projects []Project
+	for rows.Next() {
+		var p Project
+		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.Status, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		projects = append(projects, p)
+	}
+	return projects, rows.Err()
+}
+
+// UpdateProjectStatus updates the status of a project.
+func (s *Store) UpdateProjectStatus(id, status string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.Exec("UPDATE projects SET status = ?, updated_at = ? WHERE id = ?", status, now, id)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("project %s not found", id)
+	}
+	return nil
+}
+
+// --- Task CRUD ---
+
+// CreateTask inserts a new task.
+func (s *Store) CreateTask(t Task) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`
+		INSERT INTO tasks (id, project_id, title, description, status, assigned_to, created_by, priority, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, t.ID, t.ProjectID, t.Title, t.Description, t.Status, t.AssignedTo, t.CreatedBy, t.Priority, now, now)
+	return err
+}
+
+// GetTask returns a task by ID, or nil if not found.
+func (s *Store) GetTask(id string) (*Task, error) {
+	var t Task
+	err := s.db.QueryRow(
+		"SELECT id, project_id, title, description, status, assigned_to, created_by, priority, created_at, updated_at FROM tasks WHERE id = ?", id,
+	).Scan(&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.AssignedTo, &t.CreatedBy, &t.Priority, &t.CreatedAt, &t.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// ListTasks returns tasks matching the given filter.
+func (s *Store) ListTasks(filter TaskFilter) ([]Task, error) {
+	query := "SELECT id, project_id, title, description, status, assigned_to, created_by, priority, created_at, updated_at FROM tasks WHERE 1=1"
+	var args []any
+
+	if filter.ProjectID != "" {
+		query += " AND project_id = ?"
+		args = append(args, filter.ProjectID)
+	}
+	if filter.Status != "" {
+		query += " AND status = ?"
+		args = append(args, filter.Status)
+	}
+	if filter.AssignedTo != "" {
+		query += " AND assigned_to = ?"
+		args = append(args, filter.AssignedTo)
+	}
+
+	query += " ORDER BY priority ASC, created_at DESC"
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > MaxListLimit {
+		limit = MaxListLimit
+	}
+	query += " LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var tasks []Task
+	for rows.Next() {
+		var t Task
+		if err := rows.Scan(&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.AssignedTo, &t.CreatedBy, &t.Priority, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, rows.Err()
+}
+
+// UpdateTask updates mutable fields of a task.
+func (s *Store) UpdateTask(t Task) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.Exec(`
+		UPDATE tasks SET title = ?, description = ?, status = ?, assigned_to = ?, priority = ?, updated_at = ?
+		WHERE id = ?
+	`, t.Title, t.Description, t.Status, t.AssignedTo, t.Priority, now, t.ID)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("task %s not found", t.ID)
+	}
+	return nil
+}
+
+// UpdateTaskStatus updates only the status of a task.
+func (s *Store) UpdateTaskStatus(id, status string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.Exec("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?", status, now, id)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("task %s not found", id)
+	}
+	return nil
+}
+
+// --- Task Dependencies ---
+
+// AddTaskDependency records that taskID depends on dependsOn.
+// It checks for circular dependencies before inserting.
+func (s *Store) AddTaskDependency(taskID, dependsOn string) error {
+	// Check for circular dependency: would dependsOn transitively depend on taskID?
+	if cycle, err := s.wouldCreateCycle(taskID, dependsOn); err != nil {
+		return err
+	} else if cycle {
+		return fmt.Errorf("circular dependency detected")
+	}
+	_, err := s.db.Exec("INSERT INTO task_dependencies (task_id, depends_on) VALUES (?, ?)", taskID, dependsOn)
+	return err
+}
+
+// wouldCreateCycle checks if adding taskID→dependsOn would create a cycle.
+// It walks the dependency graph from dependsOn to see if it can reach taskID.
+func (s *Store) wouldCreateCycle(taskID, dependsOn string) (bool, error) {
+	visited := map[string]bool{}
+	queue := []string{dependsOn}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if current == taskID {
+			return true, nil
+		}
+		if visited[current] {
+			continue
+		}
+		visited[current] = true
+		deps, err := s.GetTaskDependencies(current)
+		if err != nil {
+			return false, err
+		}
+		queue = append(queue, deps...)
+	}
+	return false, nil
+}
+
+// GetTaskDependencies returns the IDs of tasks that a given task depends on.
+func (s *Store) GetTaskDependencies(taskID string) ([]string, error) {
+	rows, err := s.db.Query("SELECT depends_on FROM task_dependencies WHERE task_id = ?", taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var deps []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		deps = append(deps, id)
+	}
+	return deps, rows.Err()
+}
+
+// GetBlockingTasks returns tasks that block the given task (dependencies that are not done).
+func (s *Store) GetBlockingTasks(taskID string) ([]Task, error) {
+	rows, err := s.db.Query(`
+		SELECT t.id, t.project_id, t.title, t.description, t.status, t.assigned_to, t.created_by, t.priority, t.created_at, t.updated_at
+		FROM tasks t
+		JOIN task_dependencies td ON td.depends_on = t.id
+		WHERE td.task_id = ? AND t.status != 'done'
+	`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var tasks []Task
+	for rows.Next() {
+		var t Task
+		if err := rows.Scan(&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.AssignedTo, &t.CreatedBy, &t.Priority, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, rows.Err()
+}
+
+// --- Task Comments ---
+
+// AddTaskComment inserts a comment on a task.
+func (s *Store) AddTaskComment(c TaskComment) (int64, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.Exec(`
+		INSERT INTO task_comments (task_id, agent_name, content, created_at)
+		VALUES (?, ?, ?, ?)
+	`, c.TaskID, c.AgentName, c.Content, now)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+// GetTaskComments returns comments for a task ordered by creation time.
+func (s *Store) GetTaskComments(taskID string) ([]TaskComment, error) {
+	rows, err := s.db.Query(
+		"SELECT id, task_id, agent_name, content, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at ASC", taskID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var comments []TaskComment
+	for rows.Next() {
+		var c TaskComment
+		if err := rows.Scan(&c.ID, &c.TaskID, &c.AgentName, &c.Content, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		comments = append(comments, c)
+	}
+	return comments, rows.Err()
 }
 
 // LogActivity inserts an activity log entry.
@@ -303,6 +726,9 @@ func (s *Store) GetActivities(filter ActivityFilter) ([]ActivityEntry, error) {
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 50
+	}
+	if limit > MaxListLimit {
+		limit = MaxListLimit
 	}
 	query += " LIMIT ?"
 	args = append(args, limit)
@@ -514,6 +940,9 @@ func (s *Store) GetMemories(filter MemoryFilter) ([]Memory, error) {
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 50
+	}
+	if limit > MaxListLimit {
+		limit = MaxListLimit
 	}
 	query += " LIMIT ?"
 	args = append(args, limit)
