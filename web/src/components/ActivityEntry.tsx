@@ -6,6 +6,9 @@ const EVENT_COLORS: Record<EventType, { bg: string; text: string }> = {
   agent_message: { bg: "bg-purple-500/20", text: "text-purple-400" },
   session_created: { bg: "bg-gray-500/20", text: "text-gray-400" },
   session_destroyed: { bg: "bg-gray-500/20", text: "text-gray-400" },
+  memory_created: { bg: "bg-amber-500/20", text: "text-amber-400" },
+  memory_updated: { bg: "bg-amber-500/20", text: "text-amber-400" },
+  memory_deleted: { bg: "bg-amber-500/20", text: "text-amber-400" },
   error: { bg: "bg-red-500/20", text: "text-red-400" },
 };
 
