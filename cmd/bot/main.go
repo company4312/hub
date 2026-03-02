@@ -31,7 +31,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// Initialize and start the agent pool.
 	configDir := filepath.Join(dataDir, "sessions")
@@ -108,7 +108,7 @@ func main() {
 	if err := p.Start(ctx); err != nil {
 		log.Fatalf("start agent pool: %v", err)
 	}
-	defer p.Stop()
+	defer func() { _ = p.Stop() }()
 
 	// Initialize the Telegram bot.
 	b, err := bot.New(token, p)

@@ -62,7 +62,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 
 	// Show "typing…" indicator while processing.
 	action := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
-	b.api.Send(action)
+	_, _ = b.api.Send(action)
 
 	response, err := b.pool.SendMessage(ctx, chatID, msg.Text)
 	if err != nil {

@@ -123,7 +123,7 @@ func (sv *supervisor) build() error {
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
-		os.Remove(tmpBin)
+		_ = os.Remove(tmpBin)
 		return fmt.Errorf("go build: %w", err)
 	}
 
@@ -198,7 +198,7 @@ func (sv *supervisor) startChild() error {
 	sv.childStarted = time.Now()
 
 	go func() {
-		cmd.Wait()
+		_ = cmd.Wait()
 		close(sv.childDone)
 	}()
 
@@ -217,14 +217,14 @@ func (sv *supervisor) stopChild() {
 		return
 	}
 
-	syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 
 	select {
 	case <-done:
 		return
 	case <-time.After(10 * time.Second):
 		log.Println("[supervisor] child didn't exit in 10s, sending SIGKILL")
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		<-done
 	}
 }

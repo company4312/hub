@@ -30,12 +30,12 @@ func New(dbPath string) (*Store, error) {
 
 	// Enable WAL mode for better concurrent read performance.
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 
 	if err := migrate(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 
@@ -66,14 +66,14 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("begin migration %d: %w", m.version, err)
 		}
 		if err := m.run(tx); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("migration %d (%s): %w", m.version, m.name, err)
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		if _, err := tx.Exec(
 			"INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", m.version, now,
 		); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("record migration %d: %w", m.version, err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -138,14 +138,14 @@ var migrations = []migration{
 				var notNull, pk int
 				var dflt sql.NullString
 				if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
-					rows.Close()
+					_ = rows.Close()
 					return err
 				}
 				if name == "agent_name" {
 					hasAgentName = true
 				}
 			}
-			rows.Close()
+			_ = rows.Close()
 
 			if !hasAgentName {
 				if _, err := tx.Exec(`
@@ -218,7 +218,7 @@ func (s *Store) ListAgents() ([]AgentConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var agents []AgentConfig
 	for rows.Next() {
