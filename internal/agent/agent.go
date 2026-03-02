@@ -447,7 +447,7 @@ func (p *Pool) GetTaskSummary() (string, error) {
 			if t.AssignedTo != nil {
 				assignee = *t.AssignedTo
 			}
-			sb.WriteString(fmt.Sprintf("  • %s → %s\n", t.Title, assignee))
+			fmt.Fprintf(&sb, "  • %s → %s\n", t.Title, assignee)
 		}
 		sb.WriteString("\n")
 	}
@@ -459,7 +459,7 @@ func (p *Pool) GetTaskSummary() (string, error) {
 			if t.AssignedTo != nil {
 				assignee = *t.AssignedTo
 			}
-			sb.WriteString(fmt.Sprintf("  • %s → %s\n", t.Title, assignee))
+			fmt.Fprintf(&sb, "  • %s → %s\n", t.Title, assignee)
 		}
 		sb.WriteString("\n")
 	}
@@ -467,7 +467,7 @@ func (p *Pool) GetTaskSummary() (string, error) {
 	if len(todo) > 0 {
 		sb.WriteString("📋 *Up Next:*\n")
 		for _, t := range todo {
-			sb.WriteString(fmt.Sprintf("  • %s\n", t.Title))
+			fmt.Fprintf(&sb, "  • %s\n", t.Title)
 		}
 	}
 
