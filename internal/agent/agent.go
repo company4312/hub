@@ -374,8 +374,13 @@ func (p *Pool) CommentOnTask(agentName, taskID, comment string) error {
 	return nil
 }
 
-// DelegateTask creates a task, assigns it to an agent, sends them instructions
-// in a background goroutine, and notifies the originating chat when complete.
+// DelegateTask creates a task, assigns it to an agent, and runs the full
+// engineering pipeline in a background goroutine:
+// 1. Worker implements the change and opens a PR
+// 2. Reviewer reviews the PR
+// 3. CI checks are verified
+// 4. PR is merged
+// 5. Originating chat is notified
 func (p *Pool) DelegateTask(ctx context.Context, fromAgent, toAgent string, chatID int64, projectID, taskID, title, instructions string, priority int) error {
 	// Create the task.
 	if err := p.CreateTask(fromAgent, projectID, taskID, title, instructions, priority); err != nil {
@@ -392,38 +397,128 @@ func (p *Pool) DelegateTask(ctx context.Context, fromAgent, toAgent string, chat
 		return fmt.Errorf("update task status: %w", err)
 	}
 
-	// Run the agent work asynchronously.
-	go func() {
-		workCtx := context.Background()
-		prompt := fmt.Sprintf("[Task Assignment: %s]\nTask ID: %s\nProject: %s\nPriority: %d\n\nInstructions:\n%s\n\nPlease complete this task. When done, summarize what you did.",
-			title, taskID, projectID, priority, instructions)
+	// Pick a reviewer (different from the worker).
+	reviewer := p.pickReviewer(toAgent)
 
-		response, err := p.SendMessageBetween(workCtx, fromAgent, toAgent, chatID, prompt)
-		if err != nil {
-			log.Printf("delegate task %s to %s failed: %v", taskID, toAgent, err)
-			_ = p.UpdateTaskStatus(fromAgent, taskID, "backlog")
-			_ = p.CommentOnTask(fromAgent, taskID, fmt.Sprintf("delegation failed: %v", err))
-			if p.notifyFunc != nil {
-				p.notifyFunc(chatID, fmt.Sprintf("❌ Task %s failed to delegate to %s: %v", taskID, toAgent, err))
-			}
-			return
-		}
-
-		// Mark as review.
-		_ = p.UpdateTaskStatus(toAgent, taskID, "review")
-		_ = p.CommentOnTask(toAgent, taskID, response)
-
-		// Notify the originating chat.
-		if p.notifyFunc != nil {
-			summary := response
-			if len(summary) > 500 {
-				summary = summary[:500] + "…"
-			}
-			p.notifyFunc(chatID, fmt.Sprintf("✅ Task *%s* completed by %s:\n\n%s", title, toAgent, summary))
-		}
-	}()
+	// Run the full pipeline asynchronously.
+	go p.runTaskPipeline(fromAgent, toAgent, reviewer, chatID, projectID, taskID, title, instructions, priority)
 
 	return nil
+}
+
+// pickReviewer selects a review agent that is different from the worker.
+// Prefers sentinel for backend work, atlas for frontend, etc.
+func (p *Pool) pickReviewer(worker string) string {
+	// Preference order for reviewers based on worker.
+	preferences := map[string][]string{
+		"atlas":    {"sentinel", "pixel", "cto"},
+		"pixel":    {"sentinel", "atlas", "cto"},
+		"sentinel": {"atlas", "pixel", "cto"},
+		"cto":      {"sentinel", "atlas", "pixel"},
+	}
+
+	if prefs, ok := preferences[worker]; ok {
+		for _, candidate := range prefs {
+			cfg, err := p.store.GetAgent(candidate)
+			if err == nil && cfg != nil {
+				return candidate
+			}
+		}
+	}
+	return "cto"
+}
+
+// runTaskPipeline executes the full implement → review → merge workflow.
+func (p *Pool) runTaskPipeline(fromAgent, worker, reviewer string, chatID int64, projectID, taskID, title, instructions string, priority int) {
+	workCtx := context.Background()
+
+	notify := func(msg string) {
+		if p.notifyFunc != nil {
+			p.notifyFunc(chatID, msg)
+		}
+	}
+
+	fail := func(step string, err error) {
+		log.Printf("task %s pipeline failed at %s: %v", taskID, step, err)
+		_ = p.UpdateTaskStatus(fromAgent, taskID, "backlog")
+		_ = p.CommentOnTask(fromAgent, taskID, fmt.Sprintf("pipeline failed at %s: %v", step, err))
+		notify(fmt.Sprintf("❌ Task *%s* failed at %s: %v", title, step, err))
+	}
+
+	// Step 1: Worker implements the change.
+	implementPrompt := fmt.Sprintf(
+		"[Task Assignment: %s]\nTask ID: %s\nProject: %s\nPriority: %d\n\n"+
+			"Instructions:\n%s\n\n"+
+			"Follow the ENGINEERING.md workflow:\n"+
+			"1. Create a worktree and branch\n"+
+			"2. Implement the change\n"+
+			"3. Run `go build ./...` and `go vet ./...`\n"+
+			"4. Commit and push\n"+
+			"5. Create a PR with `unset GITHUB_TOKEN && gh pr create`\n"+
+			"6. Report the PR number in your response\n\n"+
+			"Important: use `git` for standard git operations. Use the gh CLI (`unset GITHUB_TOKEN && gh ...`) only for GitHub API operations.",
+		title, taskID, projectID, priority, instructions)
+
+	p.logActivity(worker, "pipeline_implement", fmt.Sprintf("starting implementation of %s", title), jsonMeta(map[string]string{"task_id": taskID}), chatID)
+
+	implResponse, err := p.SendMessageBetween(workCtx, fromAgent, worker, chatID, implementPrompt)
+	if err != nil {
+		fail("implementation", err)
+		return
+	}
+	_ = p.CommentOnTask(worker, taskID, "Implementation complete: "+implResponse)
+
+	// Step 2: Move to review, send PR to reviewer.
+	_ = p.UpdateTaskStatus(worker, taskID, "review")
+
+	reviewPrompt := fmt.Sprintf(
+		"[Code Review Request from %s]\nTask: %s\nTask ID: %s\n\n"+
+			"%s implemented this change. Please review:\n\n"+
+			"Worker's summary:\n%s\n\n"+
+			"Review the PR for correctness, security, and code quality. "+
+			"If the changes look good, approve. If there are issues, describe them.\n\n"+
+			"Use `unset GITHUB_TOKEN && gh pr list --state open` to find the PR, then review the diff with `unset GITHUB_TOKEN && gh pr diff <number>`.",
+		worker, title, taskID, worker, implResponse)
+
+	p.logActivity(reviewer, "pipeline_review", fmt.Sprintf("reviewing %s", title), jsonMeta(map[string]string{"task_id": taskID}), chatID)
+
+	reviewResponse, err := p.SendMessageBetween(workCtx, fromAgent, reviewer, chatID, reviewPrompt)
+	if err != nil {
+		fail("review", err)
+		return
+	}
+	_ = p.CommentOnTask(reviewer, taskID, "Review: "+reviewResponse)
+
+	// Step 3: Wait for CI and merge.
+	// The worker's PR should already exist. Ask the worker to check CI and merge.
+	mergePrompt := fmt.Sprintf(
+		"[Merge Request]\nTask: %s\nTask ID: %s\n\n"+
+			"The reviewer (%s) has completed their review:\n%s\n\n"+
+			"Please:\n"+
+			"1. Check CI status with `unset GITHUB_TOKEN && gh pr checks <number>`\n"+
+			"2. If CI passes, merge with `unset GITHUB_TOKEN && gh pr merge <number> --squash --delete-branch`\n"+
+			"3. Clean up the worktree\n"+
+			"4. Report whether the merge succeeded\n\n"+
+			"If CI fails, fix the issues and try again.",
+		title, taskID, reviewer, reviewResponse)
+
+	p.logActivity(worker, "pipeline_merge", fmt.Sprintf("merging %s", title), jsonMeta(map[string]string{"task_id": taskID}), chatID)
+
+	mergeResponse, err := p.SendMessageBetween(workCtx, fromAgent, worker, chatID, mergePrompt)
+	if err != nil {
+		fail("merge", err)
+		return
+	}
+	_ = p.CommentOnTask(worker, taskID, "Merge: "+mergeResponse)
+
+	// Step 4: Mark done and notify.
+	_ = p.UpdateTaskStatus(worker, taskID, "done")
+
+	summary := mergeResponse
+	if len(summary) > 500 {
+		summary = summary[:500] + "…"
+	}
+	notify(fmt.Sprintf("✅ Task *%s* completed by %s (reviewed by %s):\n\n%s", title, worker, reviewer, summary))
 }
 
 // GetTaskSummary returns a formatted status report of active tasks.
