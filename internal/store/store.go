@@ -10,10 +10,10 @@ import (
 
 // AgentConfig holds the definition of a named agent.
 type AgentConfig struct {
-	Name         string
-	Title        string
-	SystemPrompt string
-	Model        string
+	Name         string `yaml:"name"`
+	Title        string `yaml:"title"`
+	SystemPrompt string `yaml:"system_prompt"`
+	Model        string `yaml:"model"`
 }
 
 // Store manages agent definitions and chat-to-session mappings in a local SQLite database.
