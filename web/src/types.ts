@@ -9,6 +9,9 @@ export type EventType =
   | "agent_message"
   | "session_created"
   | "session_destroyed"
+  | "memory_created"
+  | "memory_updated"
+  | "memory_deleted"
   | "error";
 
 export interface ActivityEntry {
@@ -19,4 +22,14 @@ export interface ActivityEntry {
   content: string;
   metadata: Record<string, unknown>;
   chat_id: string;
+}
+
+export interface Memory {
+  id: number;
+  agent_name: string;
+  category: string;
+  content: string;
+  source: string;
+  created_at: string;
+  updated_at: string;
 }

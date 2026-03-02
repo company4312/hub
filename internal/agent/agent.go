@@ -213,12 +213,22 @@ func (p *Pool) getOrCreateSession(ctx context.Context, agentName string, chatID 
 	}
 
 	// Create a fresh session.
+	systemPrompt := cfg.SystemPrompt
+
+	// Inject agent memories into the system prompt.
+	memories, err := p.store.GetMemoriesForPrompt(agentName)
+	if err != nil {
+		log.Printf("failed to load memories for agent %s: %v", agentName, err)
+	} else if memories != "" {
+		systemPrompt += "\n\n" + memories
+	}
+
 	session, err := p.client.CreateSession(ctx, &copilot.SessionConfig{
 		Model:               cfg.Model,
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		ConfigDir:           p.configDir,
 		SystemMessage: &copilot.SystemMessageConfig{
-			Content: cfg.SystemPrompt,
+			Content: systemPrompt,
 		},
 	})
 	if err != nil {
@@ -244,4 +254,19 @@ func (p *Pool) clearSession(agentName string, chatID int64) {
 		delete(p.sessions, key)
 		p.logActivity(agentName, "session_destroyed", "session destroyed", "", chatID)
 	}
+}
+
+// SaveMemory stores a memory for an agent, logs activity, and broadcasts.
+func (p *Pool) SaveMemory(agentName, category, content, source string) (int64, error) {
+	id, err := p.store.SaveMemory(store.Memory{
+		AgentName: agentName,
+		Category:  category,
+		Content:   content,
+		Source:    source,
+	})
+	if err != nil {
+		return 0, err
+	}
+	p.logActivity(agentName, "memory_created", content, fmt.Sprintf(`{"category":"%s","source":"%s"}`, category, source), 0)
+	return id, nil
 }
