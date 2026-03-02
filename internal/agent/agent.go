@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -50,6 +51,12 @@ func (p *Pool) logActivity(agentName, eventType, content, metadata string, chatI
 	if p.apiServer != nil {
 		p.apiServer.Broadcast(entry)
 	}
+}
+
+// jsonMeta safely builds a JSON metadata string from key-value pairs.
+func jsonMeta(kv map[string]string) string {
+	b, _ := json.Marshal(kv)
+	return string(b)
 }
 
 // NewPool creates a new agent pool backed by the given store.
@@ -128,7 +135,7 @@ func (p *Pool) SendMessageBetween(ctx context.Context, fromAgent, toAgent string
 		return "", fmt.Errorf("unknown sender agent: %s", fromAgent)
 	}
 	prefixed := fmt.Sprintf("[Message from %s (%s)]\n\n%s", fromCfg.Name, fromCfg.Title, text)
-	p.logActivity(fromAgent, "agent_message", text, fmt.Sprintf(`{"to":"%s"}`, toAgent), chatID)
+	p.logActivity(fromAgent, "agent_message", text, jsonMeta(map[string]string{"to": toAgent}), chatID)
 	return p.SendMessageTo(ctx, toAgent, chatID, prefixed)
 }
 
@@ -267,7 +274,7 @@ func (p *Pool) SaveMemory(agentName, category, content, source string) (int64, e
 	if err != nil {
 		return 0, err
 	}
-	p.logActivity(agentName, "memory_created", content, fmt.Sprintf(`{"category":"%s","source":"%s"}`, category, source), 0)
+	p.logActivity(agentName, "memory_created", content, jsonMeta(map[string]string{"category": category, "source": source}), 0)
 	return id, nil
 }
 
@@ -282,7 +289,7 @@ func (p *Pool) CreateProject(agentName, id, name, description string) error {
 	}); err != nil {
 		return err
 	}
-	p.logActivity(agentName, "project_created", fmt.Sprintf("created project %s: %s", id, name), fmt.Sprintf(`{"project_id":"%s"}`, id), 0)
+	p.logActivity(agentName, "project_created", fmt.Sprintf("created project %s: %s", id, name), jsonMeta(map[string]string{"project_id": id}), 0)
 	return nil
 }
 
@@ -299,7 +306,7 @@ func (p *Pool) CreateTask(agentName, projectID, taskID, title, description strin
 	}); err != nil {
 		return err
 	}
-	p.logActivity(agentName, "task_created", fmt.Sprintf("created task %s: %s", taskID, title), fmt.Sprintf(`{"project_id":"%s","task_id":"%s"}`, projectID, taskID), 0)
+	p.logActivity(agentName, "task_created", fmt.Sprintf("created task %s: %s", taskID, title), jsonMeta(map[string]string{"project_id": projectID, "task_id": taskID}), 0)
 	return nil
 }
 
@@ -317,7 +324,7 @@ func (p *Pool) UpdateTaskStatus(agentName, taskID, newStatus string) error {
 		AgentName: agentName,
 		Content:   comment,
 	})
-	p.logActivity(agentName, "task_status_changed", comment, fmt.Sprintf(`{"task_id":"%s","status":"%s"}`, taskID, newStatus), 0)
+	p.logActivity(agentName, "task_status_changed", comment, jsonMeta(map[string]string{"task_id": taskID, "status": newStatus}), 0)
 	return nil
 }
 
@@ -334,7 +341,7 @@ func (p *Pool) AssignTask(agentName, taskID, assignee string) error {
 	if err := p.store.UpdateTask(*t); err != nil {
 		return err
 	}
-	p.logActivity(agentName, "task_assigned", fmt.Sprintf("assigned task %s to %s", taskID, assignee), fmt.Sprintf(`{"task_id":"%s","assignee":"%s"}`, taskID, assignee), 0)
+	p.logActivity(agentName, "task_assigned", fmt.Sprintf("assigned task %s to %s", taskID, assignee), jsonMeta(map[string]string{"task_id": taskID, "assignee": assignee}), 0)
 	return nil
 }
 
@@ -348,6 +355,6 @@ func (p *Pool) CommentOnTask(agentName, taskID, comment string) error {
 	if err != nil {
 		return err
 	}
-	p.logActivity(agentName, "task_comment", comment, fmt.Sprintf(`{"task_id":"%s"}`, taskID), 0)
+	p.logActivity(agentName, "task_comment", comment, jsonMeta(map[string]string{"task_id": taskID}), 0)
 	return nil
 }

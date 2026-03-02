@@ -72,6 +72,12 @@ func New(dbPath string) (*Store, error) {
 		return nil, err
 	}
 
+	// Enable foreign key enforcement (off by default in SQLite).
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	if err := migrate(db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -402,6 +408,7 @@ const (
 	MaxTitleLength       = 200
 	MaxDescriptionLength = 2000
 	MaxCommentLength     = 1000
+	MaxListLimit         = 200
 )
 
 // --- Project CRUD ---
@@ -433,7 +440,7 @@ func (s *Store) GetProject(id string) (*Project, error) {
 
 // ListProjects returns all projects ordered by creation time descending.
 func (s *Store) ListProjects() ([]Project, error) {
-	rows, err := s.db.Query("SELECT id, name, description, status, created_by, created_at, updated_at FROM projects ORDER BY created_at DESC")
+	rows, err := s.db.Query("SELECT id, name, description, status, created_by, created_at, updated_at FROM projects ORDER BY created_at DESC LIMIT ?", MaxListLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -515,6 +522,9 @@ func (s *Store) ListTasks(filter TaskFilter) ([]Task, error) {
 	if limit <= 0 {
 		limit = 50
 	}
+	if limit > MaxListLimit {
+		limit = MaxListLimit
+	}
 	query += " LIMIT ?"
 	args = append(args, limit)
 
@@ -569,9 +579,40 @@ func (s *Store) UpdateTaskStatus(id, status string) error {
 // --- Task Dependencies ---
 
 // AddTaskDependency records that taskID depends on dependsOn.
+// It checks for circular dependencies before inserting.
 func (s *Store) AddTaskDependency(taskID, dependsOn string) error {
+	// Check for circular dependency: would dependsOn transitively depend on taskID?
+	if cycle, err := s.wouldCreateCycle(taskID, dependsOn); err != nil {
+		return err
+	} else if cycle {
+		return fmt.Errorf("circular dependency detected")
+	}
 	_, err := s.db.Exec("INSERT INTO task_dependencies (task_id, depends_on) VALUES (?, ?)", taskID, dependsOn)
 	return err
+}
+
+// wouldCreateCycle checks if adding taskID→dependsOn would create a cycle.
+// It walks the dependency graph from dependsOn to see if it can reach taskID.
+func (s *Store) wouldCreateCycle(taskID, dependsOn string) (bool, error) {
+	visited := map[string]bool{}
+	queue := []string{dependsOn}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if current == taskID {
+			return true, nil
+		}
+		if visited[current] {
+			continue
+		}
+		visited[current] = true
+		deps, err := s.GetTaskDependencies(current)
+		if err != nil {
+			return false, err
+		}
+		queue = append(queue, deps...)
+	}
+	return false, nil
 }
 
 // GetTaskDependencies returns the IDs of tasks that a given task depends on.
@@ -685,6 +726,9 @@ func (s *Store) GetActivities(filter ActivityFilter) ([]ActivityEntry, error) {
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 50
+	}
+	if limit > MaxListLimit {
+		limit = MaxListLimit
 	}
 	query += " LIMIT ?"
 	args = append(args, limit)
@@ -896,6 +940,9 @@ func (s *Store) GetMemories(filter MemoryFilter) ([]Memory, error) {
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 50
+	}
+	if limit > MaxListLimit {
+		limit = MaxListLimit
 	}
 	query += " LIMIT ?"
 	args = append(args, limit)

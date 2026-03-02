@@ -261,7 +261,7 @@ func (srv *Server) handleCreateMemory(w http.ResponseWriter, r *http.Request) {
 		Source:    body.Source,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "bad request", http.StatusBadRequest)
 		log.Printf("save memory: %v", err)
 		return
 	}
@@ -326,7 +326,7 @@ func (srv *Server) handleUpdateMemory(w http.ResponseWriter, r *http.Request, id
 	}
 
 	if err := srv.store.UpdateMemory(id, body.AgentName, body.Content); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "bad request", http.StatusBadRequest)
 		log.Printf("update memory: %v", err)
 		return
 	}
@@ -358,7 +358,7 @@ func (srv *Server) handleDeleteMemory(w http.ResponseWriter, r *http.Request, id
 	}
 
 	if err := srv.store.DeleteMemory(id, body.AgentName); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "bad request", http.StatusBadRequest)
 		log.Printf("delete memory: %v", err)
 		return
 	}
@@ -442,7 +442,7 @@ func (srv *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		Status:      "active",
 		CreatedBy:   body.CreatedBy,
 	}); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "bad request", http.StatusBadRequest)
 		log.Printf("create project: %v", err)
 		return
 	}
@@ -517,7 +517,7 @@ func (srv *Server) handlePatchProject(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 	if err := srv.store.UpdateProjectStatus(id, body.Status); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "bad request", http.StatusBadRequest)
 		log.Printf("update project status: %v", err)
 		return
 	}
@@ -596,7 +596,7 @@ func (srv *Server) handleCreateTaskForProject(w http.ResponseWriter, r *http.Req
 		CreatedBy:   body.CreatedBy,
 		Priority:    body.Priority,
 	}); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "bad request", http.StatusBadRequest)
 		log.Printf("create task: %v", err)
 		return
 	}
@@ -745,7 +745,7 @@ func (srv *Server) handlePatchTask(w http.ResponseWriter, r *http.Request, id st
 	}
 
 	if err := srv.store.UpdateTask(*existing); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "bad request", http.StatusBadRequest)
 		log.Printf("update task: %v", err)
 		return
 	}
@@ -794,7 +794,7 @@ func (srv *Server) handleTaskDependencies(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if err := srv.store.AddTaskDependency(taskID, body.DependsOn); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, "bad request", http.StatusBadRequest)
 			log.Printf("add task dependency: %v", err)
 			return
 		}
@@ -847,7 +847,7 @@ func (srv *Server) handleTaskComments(w http.ResponseWriter, r *http.Request, ta
 			Content:   body.Content,
 		})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, "bad request", http.StatusBadRequest)
 			log.Printf("add task comment: %v", err)
 			return
 		}
