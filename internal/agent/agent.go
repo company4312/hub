@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	copilot "github.com/github/copilot-sdk/go"
 
+	"github.com/company4312/copilot-telegram-bot/internal/api"
 	"github.com/company4312/copilot-telegram-bot/internal/store"
 )
 
@@ -24,6 +26,30 @@ type Pool struct {
 	configDir string
 	sessions  map[sessionKey]*copilot.Session
 	mu        sync.Mutex
+	apiServer *api.Server
+}
+
+// SetAPIServer sets the API server used for broadcasting activity events.
+func (p *Pool) SetAPIServer(srv *api.Server) {
+	p.apiServer = srv
+}
+
+// logActivity records an activity entry and broadcasts it to SSE clients.
+func (p *Pool) logActivity(agentName, eventType, content, metadata string, chatID int64) {
+	entry := store.ActivityEntry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		AgentName: agentName,
+		EventType: eventType,
+		Content:   content,
+		Metadata:  metadata,
+		ChatID:    chatID,
+	}
+	if err := p.store.LogActivity(entry); err != nil {
+		log.Printf("log activity: %v", err)
+	}
+	if p.apiServer != nil {
+		p.apiServer.Broadcast(entry)
+	}
 }
 
 // NewPool creates a new agent pool backed by the given store.
@@ -72,6 +98,8 @@ func (p *Pool) SendMessageTo(ctx context.Context, agentName string, chatID int64
 		return "", fmt.Errorf("session setup: %w", err)
 	}
 
+	p.logActivity(agentName, "message_sent", text, "", chatID)
+
 	response, err := p.sendAndWait(ctx, session, text)
 	if err != nil {
 		// If send fails, the session may be stale — clear it and retry once.
@@ -82,9 +110,12 @@ func (p *Pool) SendMessageTo(ctx context.Context, agentName string, chatID int64
 		}
 		response, err = p.sendAndWait(ctx, session, text)
 		if err != nil {
+			p.logActivity(agentName, "error", err.Error(), "", chatID)
 			return "", fmt.Errorf("send message: %w", err)
 		}
 	}
+
+	p.logActivity(agentName, "message_received", response, "", chatID)
 
 	return response, nil
 }
@@ -97,6 +128,7 @@ func (p *Pool) SendMessageBetween(ctx context.Context, fromAgent, toAgent string
 		return "", fmt.Errorf("unknown sender agent: %s", fromAgent)
 	}
 	prefixed := fmt.Sprintf("[Message from %s (%s)]\n\n%s", fromCfg.Name, fromCfg.Title, text)
+	p.logActivity(fromAgent, "agent_message", text, fmt.Sprintf(`{"to":"%s"}`, toAgent), chatID)
 	return p.SendMessageTo(ctx, toAgent, chatID, prefixed)
 }
 
@@ -198,6 +230,7 @@ func (p *Pool) getOrCreateSession(ctx context.Context, agentName string, chatID 
 	}
 
 	p.sessions[key] = session
+	p.logActivity(agentName, "session_created", fmt.Sprintf("session %s created", session.SessionID), "", chatID)
 	return session, nil
 }
 
@@ -209,5 +242,6 @@ func (p *Pool) clearSession(agentName string, chatID int64) {
 	if session, ok := p.sessions[key]; ok {
 		_ = session.Destroy()
 		delete(p.sessions, key)
+		p.logActivity(agentName, "session_destroyed", "session destroyed", "", chatID)
 	}
 }
