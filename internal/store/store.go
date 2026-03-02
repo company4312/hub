@@ -1007,6 +1007,163 @@ func (s *Store) GetMemoriesForPrompt(agentName string) (string, error) {
 	return result, nil
 }
 
+// GetContextBriefing builds a situational awareness block for an agent's system prompt.
+// It includes assigned tasks, active projects, and recent activity.
+func (s *Store) GetContextBriefing(agentName string) (string, error) {
+	var sections []string
+
+	// 1. Assigned tasks (not done).
+	assignedTasks, err := s.getAssignedTaskSummary(agentName)
+	if err != nil {
+		return "", fmt.Errorf("assigned tasks: %w", err)
+	}
+	if assignedTasks != "" {
+		sections = append(sections, assignedTasks)
+	}
+
+	// 2. Active projects.
+	projectSummary, err := s.getActiveProjectSummary()
+	if err != nil {
+		return "", fmt.Errorf("projects: %w", err)
+	}
+	if projectSummary != "" {
+		sections = append(sections, projectSummary)
+	}
+
+	// 3. Recent activity involving this agent (last 20 entries).
+	recentActivity, err := s.getRecentActivitySummary(agentName)
+	if err != nil {
+		return "", fmt.Errorf("activity: %w", err)
+	}
+	if recentActivity != "" {
+		sections = append(sections, recentActivity)
+	}
+
+	if len(sections) == 0 {
+		return "", nil
+	}
+
+	result := "[Current Context]\n"
+	result += "The following is your current situational awareness. Use it to inform your work.\n\n"
+	for _, s := range sections {
+		result += s + "\n"
+	}
+	return result, nil
+}
+
+func (s *Store) getAssignedTaskSummary(agentName string) (string, error) {
+	rows, err := s.db.Query(`
+		SELECT id, project_id, title, status, priority FROM tasks
+		WHERE assigned_to = ? AND status NOT IN ('done')
+		ORDER BY priority ASC, created_at DESC LIMIT 20
+	`, agentName)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var lines []string
+	for rows.Next() {
+		var id, projectID, title, status string
+		var priority int
+		if err := rows.Scan(&id, &projectID, &title, &status, &priority); err != nil {
+			return "", err
+		}
+		lines = append(lines, fmt.Sprintf("  - [%s] %s (project: %s, priority: %d, status: %s)", id, title, projectID, priority, status))
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+
+	result := "Your Assigned Tasks:\n"
+	for _, l := range lines {
+		result += l + "\n"
+	}
+	return result, nil
+}
+
+func (s *Store) getActiveProjectSummary() (string, error) {
+	rows, err := s.db.Query(`
+		SELECT p.id, p.name,
+			(SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status NOT IN ('done')) as open_tasks,
+			(SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 'done') as done_tasks
+		FROM projects p
+		WHERE p.status = 'active'
+		ORDER BY p.created_at DESC LIMIT 10
+	`)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var lines []string
+	for rows.Next() {
+		var id, name string
+		var openTasks, doneTasks int
+		if err := rows.Scan(&id, &name, &openTasks, &doneTasks); err != nil {
+			return "", err
+		}
+		lines = append(lines, fmt.Sprintf("  - %s: %s (%d open, %d done)", id, name, openTasks, doneTasks))
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+
+	result := "Active Projects:\n"
+	for _, l := range lines {
+		result += l + "\n"
+	}
+	return result, nil
+}
+
+func (s *Store) getRecentActivitySummary(agentName string) (string, error) {
+	rows, err := s.db.Query(`
+		SELECT agent_name, event_type, content, timestamp FROM activity_log
+		WHERE agent_name = ? OR metadata LIKE ?
+		ORDER BY timestamp DESC LIMIT 20
+	`, agentName, fmt.Sprintf("%%\"%s\"%%", agentName))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var lines []string
+	for rows.Next() {
+		var agent, eventType, content, ts string
+		if err := rows.Scan(&agent, &eventType, &content, &ts); err != nil {
+			return "", err
+		}
+		// Truncate long content.
+		if len(content) > 150 {
+			content = content[:147] + "..."
+		}
+		lines = append(lines, fmt.Sprintf("  - [%s] %s: %s — %s", ts, agent, eventType, content))
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+
+	// Reverse so oldest is first (chronological).
+	for i, j := 0, len(lines)-1; i < j; i, j = i+1, j-1 {
+		lines[i], lines[j] = lines[j], lines[i]
+	}
+
+	result := "Recent Activity:\n"
+	for _, l := range lines {
+		result += l + "\n"
+	}
+	return result, nil
+}
+
 // Close closes the database connection.
 func (s *Store) Close() error {
 	return s.db.Close()
