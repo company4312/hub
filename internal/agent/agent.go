@@ -89,6 +89,17 @@ func (p *Pool) SendMessageTo(ctx context.Context, agentName string, chatID int64
 	return response, nil
 }
 
+// SendMessageBetween delivers a message from one agent to another within the same chat.
+// The message is prefixed with the sender's identity so the recipient knows who is talking.
+func (p *Pool) SendMessageBetween(ctx context.Context, fromAgent, toAgent string, chatID int64, text string) (string, error) {
+	fromCfg, err := p.store.GetAgent(fromAgent)
+	if err != nil || fromCfg == nil {
+		return "", fmt.Errorf("unknown sender agent: %s", fromAgent)
+	}
+	prefixed := fmt.Sprintf("[Message from %s (%s)]\n\n%s", fromCfg.Name, fromCfg.Title, text)
+	return p.SendMessageTo(ctx, toAgent, chatID, prefixed)
+}
+
 // sendAndWait sends a prompt on the session and blocks until "session.idle".
 func (p *Pool) sendAndWait(ctx context.Context, session *copilot.Session, text string) (string, error) {
 	var (
