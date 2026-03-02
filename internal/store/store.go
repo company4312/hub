@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -42,33 +43,143 @@ func New(dbPath string) (*Store, error) {
 }
 
 func migrate(db *sql.DB) error {
-	const schema = `
-	CREATE TABLE IF NOT EXISTS agents (
-		name          TEXT PRIMARY KEY,
-		title         TEXT NOT NULL,
-		system_prompt TEXT NOT NULL,
-		model         TEXT NOT NULL,
-		created_at    TEXT NOT NULL,
-		updated_at    TEXT NOT NULL
-	);
+	// Create the migrations tracking table.
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version    INTEGER PRIMARY KEY,
+			applied_at TEXT    NOT NULL
+		)
+	`); err != nil {
+		return fmt.Errorf("create schema_migrations table: %w", err)
+	}
 
-	CREATE TABLE IF NOT EXISTS sessions (
-		chat_id    INTEGER NOT NULL,
-		agent_name TEXT    NOT NULL DEFAULT 'cto',
-		session_id TEXT    NOT NULL,
-		created_at TEXT    NOT NULL,
-		updated_at TEXT    NOT NULL,
-		PRIMARY KEY (chat_id, agent_name)
-	);
+	for _, m := range migrations {
+		var exists int
+		if err := db.QueryRow(
+			"SELECT 1 FROM schema_migrations WHERE version = ?", m.version,
+		).Scan(&exists); err == nil {
+			continue // already applied
+		}
 
-	CREATE TABLE IF NOT EXISTS chat_agents (
-		chat_id    INTEGER PRIMARY KEY,
-		agent_name TEXT    NOT NULL DEFAULT 'cto',
-		updated_at TEXT    NOT NULL
-	);
-	`
-	_, err := db.Exec(schema)
-	return err
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration %d: %w", m.version, err)
+		}
+		if err := m.run(tx); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migration %d (%s): %w", m.version, m.name, err)
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		if _, err := tx.Exec(
+			"INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", m.version, now,
+		); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record migration %d: %w", m.version, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %d: %w", m.version, err)
+		}
+	}
+	return nil
+}
+
+type migration struct {
+	version int
+	name    string
+	run     func(tx *sql.Tx) error
+}
+
+// migrations is the ordered list of all schema migrations.
+// Append new migrations here; never modify or reorder existing entries.
+var migrations = []migration{
+	{
+		version: 1,
+		name:    "create initial tables",
+		run: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`
+				CREATE TABLE IF NOT EXISTS sessions (
+					chat_id    INTEGER PRIMARY KEY,
+					session_id TEXT    NOT NULL,
+					created_at TEXT    NOT NULL,
+					updated_at TEXT    NOT NULL
+				)
+			`)
+			return err
+		},
+	},
+	{
+		version: 2,
+		name:    "add agents and multi-agent sessions",
+		run: func(tx *sql.Tx) error {
+			// Create agents table.
+			if _, err := tx.Exec(`
+				CREATE TABLE IF NOT EXISTS agents (
+					name          TEXT PRIMARY KEY,
+					title         TEXT NOT NULL,
+					system_prompt TEXT NOT NULL,
+					model         TEXT NOT NULL,
+					created_at    TEXT NOT NULL,
+					updated_at    TEXT NOT NULL
+				)
+			`); err != nil {
+				return err
+			}
+
+			// Recreate sessions with composite PK (chat_id, agent_name).
+			// Check if the old schema exists (no agent_name column).
+			hasAgentName := false
+			rows, err := tx.Query("PRAGMA table_info(sessions)")
+			if err != nil {
+				return err
+			}
+			for rows.Next() {
+				var cid int
+				var name, typ string
+				var notNull, pk int
+				var dflt sql.NullString
+				if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+					rows.Close()
+					return err
+				}
+				if name == "agent_name" {
+					hasAgentName = true
+				}
+			}
+			rows.Close()
+
+			if !hasAgentName {
+				if _, err := tx.Exec(`
+					ALTER TABLE sessions RENAME TO sessions_old;
+
+					CREATE TABLE sessions (
+						chat_id    INTEGER NOT NULL,
+						agent_name TEXT    NOT NULL DEFAULT 'cto',
+						session_id TEXT    NOT NULL,
+						created_at TEXT    NOT NULL,
+						updated_at TEXT    NOT NULL,
+						PRIMARY KEY (chat_id, agent_name)
+					);
+
+					INSERT INTO sessions (chat_id, agent_name, session_id, created_at, updated_at)
+					SELECT chat_id, 'cto', session_id, created_at, updated_at FROM sessions_old;
+
+					DROP TABLE sessions_old;
+				`); err != nil {
+					return err
+				}
+			}
+
+			// Create chat_agents table.
+			_, err = tx.Exec(`
+				CREATE TABLE IF NOT EXISTS chat_agents (
+					chat_id    INTEGER PRIMARY KEY,
+					agent_name TEXT    NOT NULL DEFAULT 'cto',
+					updated_at TEXT    NOT NULL
+				)
+			`)
+			return err
+		},
+	},
 }
 
 // RegisterAgent upserts an agent definition.
