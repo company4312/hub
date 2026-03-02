@@ -75,7 +75,8 @@ func main() {
 	p.SetAPIServer(apiSrv)
 
 	// Initialize the Telegram bot.
-	b, err := bot.New(token, p)
+	authorizedUsers := bot.ParseAuthorizedUsers(os.Getenv("AUTHORIZED_USERS"))
+	b, err := bot.New(token, p, authorizedUsers)
 	if err != nil {
 		log.Fatalf("init telegram bot: %v", err)
 	}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 	"syscall"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -14,18 +16,31 @@ import (
 
 // Bot handles the Telegram update loop and dispatches messages to the agent.
 type Bot struct {
-	api  *tgbotapi.BotAPI
-	pool *agent.Pool
+	api             *tgbotapi.BotAPI
+	pool            *agent.Pool
+	authorizedUsers map[int64]bool
 }
 
 // New creates a Telegram bot instance with the given token and agent pool.
-func New(token string, p *agent.Pool) (*Bot, error) {
+// authorizedUserIDs restricts access; if empty, all users are allowed.
+func New(token string, p *agent.Pool, authorizedUserIDs []int64) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, fmt.Errorf("telegram auth: %w", err)
 	}
 	log.Printf("Telegram bot authorized as @%s", api.Self.UserName)
-	return &Bot{api: api, pool: p}, nil
+
+	allowed := make(map[int64]bool, len(authorizedUserIDs))
+	for _, id := range authorizedUserIDs {
+		allowed[id] = true
+	}
+	if len(allowed) > 0 {
+		log.Printf("Authorization enabled: %d allowed user(s)", len(allowed))
+	} else {
+		log.Println("WARNING: No AUTHORIZED_USERS configured — bot is open to everyone")
+	}
+
+	return &Bot{api: api, pool: p, authorizedUsers: allowed}, nil
 }
 
 // Run starts the long-polling update loop. It blocks until ctx is cancelled.
@@ -54,6 +69,13 @@ func (b *Bot) Run(ctx context.Context) error {
 
 func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
+
+	if !b.isAuthorized(msg.From) {
+		log.Printf("unauthorized message from user %d (%s) in chat %d",
+			msg.From.ID, msg.From.UserName, chatID)
+		b.reply(chatID, "⛔ You are not authorized to use this bot.")
+		return
+	}
 
 	if msg.IsCommand() {
 		b.handleCommand(ctx, msg)
@@ -122,4 +144,38 @@ func (b *Bot) reply(chatID int64, text string) {
 	if _, err := b.api.Send(msg); err != nil {
 		log.Printf("failed to send message to chat %d: %v", chatID, err)
 	}
+}
+
+// isAuthorized checks whether a user is allowed to interact with the bot.
+// If no authorized users are configured, everyone is allowed.
+func (b *Bot) isAuthorized(user *tgbotapi.User) bool {
+	if len(b.authorizedUsers) == 0 {
+		return true
+	}
+	if user == nil {
+		return false
+	}
+	return b.authorizedUsers[user.ID]
+}
+
+// ParseAuthorizedUsers parses a comma-separated string of Telegram user IDs.
+func ParseAuthorizedUsers(raw string) []int64 {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	var ids []int64
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(p, 10, 64)
+		if err != nil {
+			log.Printf("WARNING: invalid user ID %q in AUTHORIZED_USERS, skipping", p)
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
 }
