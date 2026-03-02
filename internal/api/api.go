@@ -157,6 +157,7 @@ func (srv *Server) handleActivityStream(w http.ResponseWriter, r *http.Request) 
 		srv.mu.Lock()
 		delete(srv.clients, ch)
 		srv.mu.Unlock()
+		close(ch)
 	}()
 
 	ctx := r.Context()
