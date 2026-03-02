@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/company4312/copilot-telegram-bot/internal/store"
+	"github.com/company4312/copilot-telegram-bot/web"
 )
 
 // Server is the HTTP API server for the Company4312 dashboard.
@@ -43,7 +45,13 @@ func New(s *store.Store, addr string) *Server {
 	mux.HandleFunc("/api/projects", srv.handleProjects)
 	mux.HandleFunc("/api/tasks/", srv.handleTaskByID)
 	mux.HandleFunc("/api/tasks", srv.handleTasks)
-	mux.Handle("/", http.FileServer(http.Dir("web/dist")))
+
+	// Serve embedded frontend assets.
+	distFS, err := fs.Sub(web.DistFS, "dist")
+	if err != nil {
+		log.Fatalf("embed frontend: %v", err)
+	}
+	mux.Handle("/", http.FileServer(http.FS(distFS)))
 
 	srv.httpServer = &http.Server{
 		Addr:    addr,
