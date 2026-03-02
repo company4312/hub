@@ -14,6 +14,9 @@ const EVENT_COLORS: Record<EventType, { bg: string; text: string; icon: string }
   task_status_changed: { bg: "bg-cyan-500/20", text: "text-cyan-400", icon: "🔄" },
   task_assigned: { bg: "bg-rose-500/20", text: "text-rose-400", icon: "👤" },
   task_comment: { bg: "bg-violet-500/20", text: "text-violet-400", icon: "💭" },
+  pipeline_implement: { bg: "bg-orange-500/20", text: "text-orange-400", icon: "🔨" },
+  pipeline_review: { bg: "bg-sky-500/20", text: "text-sky-400", icon: "👀" },
+  pipeline_merge: { bg: "bg-emerald-500/20", text: "text-emerald-400", icon: "🔀" },
   error: { bg: "bg-red-500/20", text: "text-red-400", icon: "❌" },
 };
 

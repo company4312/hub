@@ -17,6 +17,9 @@ export type EventType =
   | "task_status_changed"
   | "task_assigned"
   | "task_comment"
+  | "pipeline_implement"
+  | "pipeline_review"
+  | "pipeline_merge"
   | "error";
 
 export interface ActivityEntry {
