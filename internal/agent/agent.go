@@ -237,6 +237,14 @@ func (p *Pool) getOrCreateSession(ctx context.Context, agentName string, chatID 
 		systemPrompt += "\n\n" + memories
 	}
 
+	// Inject context briefing (assigned tasks, projects, recent activity).
+	briefing, err := p.store.GetContextBriefing(agentName)
+	if err != nil {
+		log.Printf("failed to load context for agent %s: %v", agentName, err)
+	} else if briefing != "" {
+		systemPrompt += "\n\n" + briefing
+	}
+
 	session, err := p.client.CreateSession(ctx, &copilot.SessionConfig{
 		Model:               cfg.Model,
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
