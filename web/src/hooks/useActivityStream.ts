@@ -8,7 +8,7 @@ export function useActivityStream(agentFilter?: string) {
   const [entries, setEntries] = useState<ActivityEntry[]>([]);
   const [connected, setConnected] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const addEntry = useCallback((entry: ActivityEntry) => {
     setEntries((prev) => {
@@ -54,7 +54,7 @@ export function useActivityStream(agentFilter?: string) {
     return () => {
       cancelled = true;
       eventSourceRef.current?.close();
-      clearTimeout(reconnectTimer.current);
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
     };
   }, [addEntry]);
 
