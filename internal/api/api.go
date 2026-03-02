@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/company4312/copilot-telegram-bot/internal/store"
 )
@@ -35,6 +36,8 @@ func New(s *store.Store, addr string) *Server {
 	mux.HandleFunc("/api/agents", srv.handleAgents)
 	mux.HandleFunc("/api/activity/stream", srv.handleActivityStream)
 	mux.HandleFunc("/api/activity", srv.handleActivity)
+	mux.HandleFunc("/api/memories/", srv.handleMemoryByID)
+	mux.HandleFunc("/api/memories", srv.handleMemories)
 	mux.Handle("/", http.FileServer(http.Dir("web/dist")))
 
 	srv.httpServer = &http.Server{
@@ -174,4 +177,162 @@ func (srv *Server) handleActivityStream(w http.ResponseWriter, r *http.Request) 
 			flusher.Flush()
 		}
 	}
+}
+
+func (srv *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		srv.handleListMemories(w, r)
+	case http.MethodPost:
+		srv.handleCreateMemory(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (srv *Server) handleListMemories(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	filter := store.MemoryFilter{
+		AgentName: q.Get("agent"),
+		Category:  q.Get("category"),
+		Search:    q.Get("search"),
+	}
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			filter.Limit = n
+		}
+	}
+
+	memories, err := srv.store.GetMemories(filter)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		log.Printf("get memories: %v", err)
+		return
+	}
+	if memories == nil {
+		memories = []store.Memory{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(memories)
+}
+
+func (srv *Server) handleCreateMemory(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		AgentName string `json:"agent_name"`
+		Category  string `json:"category"`
+		Content   string `json:"content"`
+		Source    string `json:"source"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if body.AgentName == "" || body.Category == "" || body.Content == "" {
+		http.Error(w, "agent_name, category, and content are required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := srv.store.SaveMemory(store.Memory{
+		AgentName: body.AgentName,
+		Category:  body.Category,
+		Content:   body.Content,
+		Source:    body.Source,
+	})
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		log.Printf("save memory: %v", err)
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	entry := store.ActivityEntry{
+		Timestamp: now,
+		AgentName: body.AgentName,
+		EventType: "memory_created",
+		Content:   body.Content,
+		Metadata:  fmt.Sprintf(`{"category":"%s","source":"%s","memory_id":%d}`, body.Category, body.Source, id),
+	}
+	if err := srv.store.LogActivity(entry); err != nil {
+		log.Printf("log activity: %v", err)
+	}
+	srv.Broadcast(entry)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]int64{"id": id})
+}
+
+func (srv *Server) handleMemoryByID(w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Path[len("/api/memories/"):]
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "invalid memory ID", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPut:
+		srv.handleUpdateMemory(w, r, id)
+	case http.MethodDelete:
+		srv.handleDeleteMemory(w, id)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (srv *Server) handleUpdateMemory(w http.ResponseWriter, r *http.Request, id int64) {
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if body.Content == "" {
+		http.Error(w, "content is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := srv.store.UpdateMemory(id, body.Content); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		log.Printf("update memory: %v", err)
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	entry := store.ActivityEntry{
+		Timestamp: now,
+		EventType: "memory_updated",
+		Content:   body.Content,
+		Metadata:  fmt.Sprintf(`{"memory_id":%d}`, id),
+	}
+	if err := srv.store.LogActivity(entry); err != nil {
+		log.Printf("log activity: %v", err)
+	}
+	srv.Broadcast(entry)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (srv *Server) handleDeleteMemory(w http.ResponseWriter, id int64) {
+	if err := srv.store.DeleteMemory(id); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		log.Printf("delete memory: %v", err)
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	entry := store.ActivityEntry{
+		Timestamp: now,
+		EventType: "memory_deleted",
+		Content:   fmt.Sprintf("memory %d deleted", id),
+		Metadata:  fmt.Sprintf(`{"memory_id":%d}`, id),
+	}
+	if err := srv.store.LogActivity(entry); err != nil {
+		log.Printf("log activity: %v", err)
+	}
+	srv.Broadcast(entry)
+
+	w.WriteHeader(http.StatusNoContent)
 }

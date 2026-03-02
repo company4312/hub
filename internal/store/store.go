@@ -16,6 +16,25 @@ type AgentConfig struct {
 	Model        string `yaml:"model"`
 }
 
+// Memory represents a stored memory for an agent.
+type Memory struct {
+	ID        int64  `json:"id"`
+	AgentName string `json:"agent_name"`
+	Category  string `json:"category"`
+	Content   string `json:"content"`
+	Source    string `json:"source"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// MemoryFilter controls which memories are returned.
+type MemoryFilter struct {
+	AgentName string
+	Category  string
+	Search    string // substring match on content
+	Limit     int
+}
+
 // ActivityEntry represents a single activity log row.
 type ActivityEntry struct {
 	ID        int64  `json:"id"`
@@ -226,6 +245,30 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		version: 4,
+		name:    "create memories table",
+		run: func(tx *sql.Tx) error {
+			if _, err := tx.Exec(`
+				CREATE TABLE memories (
+					id         INTEGER PRIMARY KEY AUTOINCREMENT,
+					agent_name TEXT    NOT NULL,
+					category   TEXT    NOT NULL,
+					content    TEXT    NOT NULL,
+					source     TEXT    NOT NULL DEFAULT '',
+					created_at TEXT    NOT NULL,
+					updated_at TEXT    NOT NULL
+				)
+			`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`CREATE INDEX idx_memories_agent ON memories(agent_name)`); err != nil {
+				return err
+			}
+			_, err := tx.Exec(`CREATE INDEX idx_memories_category ON memories(agent_name, category)`)
+			return err
+		},
+	},
 }
 
 // LogActivity inserts an activity log entry.
@@ -378,6 +421,113 @@ func (s *Store) SaveSession(chatID int64, agentName string, sessionID string) er
 func (s *Store) DeleteSession(chatID int64, agentName string) error {
 	_, err := s.db.Exec("DELETE FROM sessions WHERE chat_id = ? AND agent_name = ?", chatID, agentName)
 	return err
+}
+
+// SaveMemory inserts a new memory and returns its ID.
+func (s *Store) SaveMemory(m Memory) (int64, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.Exec(`
+		INSERT INTO memories (agent_name, category, content, source, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, m.AgentName, m.Category, m.Content, m.Source, now, now)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+// UpdateMemory updates the content of an existing memory.
+func (s *Store) UpdateMemory(id int64, content string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`UPDATE memories SET content = ?, updated_at = ? WHERE id = ?`, content, now, id)
+	return err
+}
+
+// DeleteMemory removes a memory by ID.
+func (s *Store) DeleteMemory(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM memories WHERE id = ?`, id)
+	return err
+}
+
+// GetMemories returns memories matching the given filter.
+func (s *Store) GetMemories(filter MemoryFilter) ([]Memory, error) {
+	query := "SELECT id, agent_name, category, content, source, created_at, updated_at FROM memories WHERE 1=1"
+	var args []any
+
+	if filter.AgentName != "" {
+		query += " AND agent_name = ?"
+		args = append(args, filter.AgentName)
+	}
+	if filter.Category != "" {
+		query += " AND category = ?"
+		args = append(args, filter.Category)
+	}
+	if filter.Search != "" {
+		query += " AND content LIKE ?"
+		args = append(args, "%"+filter.Search+"%")
+	}
+
+	query += " ORDER BY created_at DESC"
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	query += " LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var memories []Memory
+	for rows.Next() {
+		var m Memory
+		if err := rows.Scan(&m.ID, &m.AgentName, &m.Category, &m.Content, &m.Source, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		memories = append(memories, m)
+	}
+	return memories, rows.Err()
+}
+
+// GetMemoriesForPrompt returns all memories for an agent formatted for system prompt injection.
+func (s *Store) GetMemoriesForPrompt(agentName string) (string, error) {
+	rows, err := s.db.Query(
+		"SELECT category, content, source FROM memories WHERE agent_name = ? ORDER BY category, created_at",
+		agentName,
+	)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var lines []string
+	for rows.Next() {
+		var category, content, source string
+		if err := rows.Scan(&category, &content, &source); err != nil {
+			return "", err
+		}
+		line := fmt.Sprintf("- [%s] %s", category, content)
+		if source != "" {
+			line += fmt.Sprintf(" (source: %s)", source)
+		}
+		lines = append(lines, line)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+
+	result := "[Your Memories]\nYou have the following memories from past experience. Use them to inform your work.\n\n"
+	for _, l := range lines {
+		result += l + "\n"
+	}
+	return result, nil
 }
 
 // Close closes the database connection.
