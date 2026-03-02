@@ -1,0 +1,19 @@
+# Binary
+/bot
+/cmd/bot/bot
+/cmd/supervisor/supervisor
+/bin/
+
+# Data
+/data/*.db
+/data/*.db-journal
+/data/*.db-wal
+/data/*.db-shm
+
+# Environment
+.env
+
+# OS
+.DS_Store
+
+.envrc

@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "deepwiki": {
+      "command": "npx",
+      "args": ["-y", "mcp-deepwiki@latest"]
+    }
+  }
+}
