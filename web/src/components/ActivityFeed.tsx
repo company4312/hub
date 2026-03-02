@@ -17,6 +17,14 @@ function AgentStats({ entries }: { entries: ActivityEntryType[] }) {
       e.event_type === "agent_message",
   ).length;
 
+  const taskEvents = entries.filter(
+    (e) =>
+      e.event_type === "task_created" ||
+      e.event_type === "task_status_changed" ||
+      e.event_type === "task_assigned" ||
+      e.event_type === "task_comment",
+  ).length;
+
   const lastActive = entries.length > 0 ? entries[entries.length - 1]!.timestamp : null;
 
   return (
@@ -25,6 +33,12 @@ function AgentStats({ entries }: { entries: ActivityEntryType[] }) {
         <span className="text-gray-500">Messages:</span>{" "}
         <span className="text-gray-200 font-medium">{messageCount}</span>
       </div>
+      {taskEvents > 0 && (
+        <div>
+          <span className="text-gray-500">Task events:</span>{" "}
+          <span className="text-gray-200 font-medium">{taskEvents}</span>
+        </div>
+      )}
       {lastActive && (
         <div>
           <span className="text-gray-500">Last active:</span>{" "}
@@ -115,6 +129,7 @@ export function ActivityFeed({ entries, connected, selectedAgent, agentTitle }: 
               agentName={entry.agent_name}
               eventType={entry.event_type}
               content={entry.content}
+              metadata={entry.metadata}
             />
           ))
         )}
