@@ -270,3 +270,84 @@ func (p *Pool) SaveMemory(agentName, category, content, source string) (int64, e
 	p.logActivity(agentName, "memory_created", content, fmt.Sprintf(`{"category":"%s","source":"%s"}`, category, source), 0)
 	return id, nil
 }
+
+// CreateProject creates a new project on behalf of an agent.
+func (p *Pool) CreateProject(agentName, id, name, description string) error {
+	if err := p.store.CreateProject(store.Project{
+		ID:          id,
+		Name:        name,
+		Description: description,
+		Status:      "active",
+		CreatedBy:   agentName,
+	}); err != nil {
+		return err
+	}
+	p.logActivity(agentName, "project_created", fmt.Sprintf("created project %s: %s", id, name), fmt.Sprintf(`{"project_id":"%s"}`, id), 0)
+	return nil
+}
+
+// CreateTask creates a new task in a project on behalf of an agent.
+func (p *Pool) CreateTask(agentName, projectID, taskID, title, description string, priority int) error {
+	if err := p.store.CreateTask(store.Task{
+		ID:          taskID,
+		ProjectID:   projectID,
+		Title:       title,
+		Description: description,
+		Status:      "backlog",
+		CreatedBy:   agentName,
+		Priority:    priority,
+	}); err != nil {
+		return err
+	}
+	p.logActivity(agentName, "task_created", fmt.Sprintf("created task %s: %s", taskID, title), fmt.Sprintf(`{"project_id":"%s","task_id":"%s"}`, projectID, taskID), 0)
+	return nil
+}
+
+// UpdateTaskStatus updates a task's status, logs activity, and adds a comment.
+func (p *Pool) UpdateTaskStatus(agentName, taskID, newStatus string) error {
+	if !store.ValidTaskStatuses[newStatus] {
+		return fmt.Errorf("invalid task status: %s", newStatus)
+	}
+	if err := p.store.UpdateTaskStatus(taskID, newStatus); err != nil {
+		return err
+	}
+	comment := fmt.Sprintf("status changed to %s by %s", newStatus, agentName)
+	_, _ = p.store.AddTaskComment(store.TaskComment{
+		TaskID:    taskID,
+		AgentName: agentName,
+		Content:   comment,
+	})
+	p.logActivity(agentName, "task_status_changed", comment, fmt.Sprintf(`{"task_id":"%s","status":"%s"}`, taskID, newStatus), 0)
+	return nil
+}
+
+// AssignTask assigns a task to an agent and logs the activity.
+func (p *Pool) AssignTask(agentName, taskID, assignee string) error {
+	t, err := p.store.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	if t == nil {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+	t.AssignedTo = &assignee
+	if err := p.store.UpdateTask(*t); err != nil {
+		return err
+	}
+	p.logActivity(agentName, "task_assigned", fmt.Sprintf("assigned task %s to %s", taskID, assignee), fmt.Sprintf(`{"task_id":"%s","assignee":"%s"}`, taskID, assignee), 0)
+	return nil
+}
+
+// CommentOnTask adds a comment on a task and logs the activity.
+func (p *Pool) CommentOnTask(agentName, taskID, comment string) error {
+	_, err := p.store.AddTaskComment(store.TaskComment{
+		TaskID:    taskID,
+		AgentName: agentName,
+		Content:   comment,
+	})
+	if err != nil {
+		return err
+	}
+	p.logActivity(agentName, "task_comment", comment, fmt.Sprintf(`{"task_id":"%s"}`, taskID), 0)
+	return nil
+}
