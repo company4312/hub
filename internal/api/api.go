@@ -232,6 +232,22 @@ func (srv *Server) handleCreateMemory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agent_name, category, and content are required", http.StatusBadRequest)
 		return
 	}
+	if !store.ValidMemoryCategories[body.Category] {
+		http.Error(w, "invalid category", http.StatusBadRequest)
+		return
+	}
+	if len(body.Content) > store.MaxMemoryContent {
+		http.Error(w, "content too long", http.StatusBadRequest)
+		return
+	}
+	if len(body.Source) > 200 {
+		http.Error(w, "source too long", http.StatusBadRequest)
+		return
+	}
+	if len(body.AgentName) > 100 {
+		http.Error(w, "agent_name too long", http.StatusBadRequest)
+		return
+	}
 
 	id, err := srv.store.SaveMemory(store.Memory{
 		AgentName: body.AgentName,
@@ -240,18 +256,23 @@ func (srv *Server) handleCreateMemory(w http.ResponseWriter, r *http.Request) {
 		Source:    body.Source,
 	})
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		log.Printf("save memory: %v", err)
 		return
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	metadata, _ := json.Marshal(map[string]any{
+		"category":  body.Category,
+		"source":    body.Source,
+		"memory_id": id,
+	})
 	entry := store.ActivityEntry{
 		Timestamp: now,
 		AgentName: body.AgentName,
 		EventType: "memory_created",
 		Content:   body.Content,
-		Metadata:  fmt.Sprintf(`{"category":"%s","source":"%s","memory_id":%d}`, body.Category, body.Source, id),
+		Metadata:  string(metadata),
 	}
 	if err := srv.store.LogActivity(entry); err != nil {
 		log.Printf("log activity: %v", err)
@@ -275,7 +296,7 @@ func (srv *Server) handleMemoryByID(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		srv.handleUpdateMemory(w, r, id)
 	case http.MethodDelete:
-		srv.handleDeleteMemory(w, id)
+		srv.handleDeleteMemory(w, r, id)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -283,29 +304,36 @@ func (srv *Server) handleMemoryByID(w http.ResponseWriter, r *http.Request) {
 
 func (srv *Server) handleUpdateMemory(w http.ResponseWriter, r *http.Request, id int64) {
 	var body struct {
-		Content string `json:"content"`
+		AgentName string `json:"agent_name"`
+		Content   string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	if body.Content == "" {
-		http.Error(w, "content is required", http.StatusBadRequest)
+	if body.Content == "" || body.AgentName == "" {
+		http.Error(w, "agent_name and content are required", http.StatusBadRequest)
+		return
+	}
+	if len(body.Content) > store.MaxMemoryContent {
+		http.Error(w, "content too long", http.StatusBadRequest)
 		return
 	}
 
-	if err := srv.store.UpdateMemory(id, body.Content); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+	if err := srv.store.UpdateMemory(id, body.AgentName, body.Content); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		log.Printf("update memory: %v", err)
 		return
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	metadata, _ := json.Marshal(map[string]any{"memory_id": id})
 	entry := store.ActivityEntry{
 		Timestamp: now,
+		AgentName: body.AgentName,
 		EventType: "memory_updated",
 		Content:   body.Content,
-		Metadata:  fmt.Sprintf(`{"memory_id":%d}`, id),
+		Metadata:  string(metadata),
 	}
 	if err := srv.store.LogActivity(entry); err != nil {
 		log.Printf("log activity: %v", err)
@@ -315,19 +343,29 @@ func (srv *Server) handleUpdateMemory(w http.ResponseWriter, r *http.Request, id
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (srv *Server) handleDeleteMemory(w http.ResponseWriter, id int64) {
-	if err := srv.store.DeleteMemory(id); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+func (srv *Server) handleDeleteMemory(w http.ResponseWriter, r *http.Request, id int64) {
+	var body struct {
+		AgentName string `json:"agent_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.AgentName == "" {
+		http.Error(w, "agent_name is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := srv.store.DeleteMemory(id, body.AgentName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		log.Printf("delete memory: %v", err)
 		return
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	metadata, _ := json.Marshal(map[string]any{"memory_id": id})
 	entry := store.ActivityEntry{
 		Timestamp: now,
+		AgentName: body.AgentName,
 		EventType: "memory_deleted",
 		Content:   fmt.Sprintf("memory %d deleted", id),
-		Metadata:  fmt.Sprintf(`{"memory_id":%d}`, id),
+		Metadata:  string(metadata),
 	}
 	if err := srv.store.LogActivity(entry); err != nil {
 		log.Printf("log activity: %v", err)

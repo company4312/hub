@@ -214,7 +214,11 @@ export function MemoryPanel({ agentName }: Props) {
 
   async function handleDelete(id: number) {
     try {
-      await fetch(`/api/memories/${id}`, { method: "DELETE" });
+      await fetch(`/api/memories/${id}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_name: agentName }),
+      });
       void refetch();
     } catch {
       // ignore
@@ -226,7 +230,7 @@ export function MemoryPanel({ agentName }: Props) {
       await fetch(`/api/memories/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ agent_name: agentName, content }),
       });
       void refetch();
     } catch {
