@@ -12,6 +12,11 @@ export type EventType =
   | "memory_created"
   | "memory_updated"
   | "memory_deleted"
+  | "project_created"
+  | "task_created"
+  | "task_status_changed"
+  | "task_assigned"
+  | "task_comment"
   | "error";
 
 export interface ActivityEntry {
@@ -20,7 +25,7 @@ export interface ActivityEntry {
   agent_name: string;
   event_type: EventType;
   content: string;
-  metadata: Record<string, unknown>;
+  metadata: string;
   chat_id: string;
 }
 
