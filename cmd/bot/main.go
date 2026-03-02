@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/company4312/copilot-telegram-bot/internal/agent"
+	"github.com/company4312/copilot-telegram-bot/internal/api"
 	"github.com/company4312/copilot-telegram-bot/internal/bot"
 	"github.com/company4312/copilot-telegram-bot/internal/store"
 )
@@ -60,6 +61,18 @@ func main() {
 		log.Fatalf("start agent pool: %v", err)
 	}
 	defer func() { _ = p.Stop() }()
+
+	// Start the dashboard API server.
+	dashPort := os.Getenv("DASHBOARD_PORT")
+	if dashPort == "" {
+		dashPort = "8080"
+	}
+	apiSrv := api.New(s, ":"+dashPort)
+	if err := apiSrv.Start(); err != nil {
+		log.Fatalf("start dashboard api: %v", err)
+	}
+	defer func() { _ = apiSrv.Stop(context.Background()) }()
+	p.SetAPIServer(apiSrv)
 
 	// Initialize the Telegram bot.
 	b, err := bot.New(token, p)

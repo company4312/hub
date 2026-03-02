@@ -16,6 +16,25 @@ type AgentConfig struct {
 	Model        string `yaml:"model"`
 }
 
+// ActivityEntry represents a single activity log row.
+type ActivityEntry struct {
+	ID        int64  `json:"id"`
+	Timestamp string `json:"timestamp"`
+	AgentName string `json:"agent_name"`
+	EventType string `json:"event_type"`
+	Content   string `json:"content"`
+	Metadata  string `json:"metadata,omitempty"`
+	ChatID    int64  `json:"chat_id"`
+}
+
+// ActivityFilter controls which activity entries are returned.
+type ActivityFilter struct {
+	AgentName string
+	EventType string
+	Limit     int
+	Since     string // RFC3339 timestamp
+}
+
 // Store manages agent definitions and chat-to-session mappings in a local SQLite database.
 type Store struct {
 	db *sql.DB
@@ -180,6 +199,86 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		version: 3,
+		name:    "create activity log table",
+		run: func(tx *sql.Tx) error {
+			if _, err := tx.Exec(`
+				CREATE TABLE activity_log (
+					id         INTEGER PRIMARY KEY AUTOINCREMENT,
+					timestamp  TEXT    NOT NULL,
+					agent_name TEXT    NOT NULL,
+					event_type TEXT    NOT NULL,
+					content    TEXT    NOT NULL,
+					metadata   TEXT,
+					chat_id    INTEGER NOT NULL DEFAULT 0
+				)
+			`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`CREATE INDEX idx_activity_log_agent ON activity_log(agent_name)`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`CREATE INDEX idx_activity_log_type ON activity_log(event_type)`); err != nil {
+				return err
+			}
+			_, err := tx.Exec(`CREATE INDEX idx_activity_log_time ON activity_log(timestamp DESC)`)
+			return err
+		},
+	},
+}
+
+// LogActivity inserts an activity log entry.
+func (s *Store) LogActivity(entry ActivityEntry) error {
+	_, err := s.db.Exec(`
+		INSERT INTO activity_log (timestamp, agent_name, event_type, content, metadata, chat_id)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, entry.Timestamp, entry.AgentName, entry.EventType, entry.Content, entry.Metadata, entry.ChatID)
+	return err
+}
+
+// GetActivities returns activity entries matching the given filter.
+func (s *Store) GetActivities(filter ActivityFilter) ([]ActivityEntry, error) {
+	query := "SELECT id, timestamp, agent_name, event_type, content, COALESCE(metadata,''), chat_id FROM activity_log WHERE 1=1"
+	var args []any
+
+	if filter.AgentName != "" {
+		query += " AND agent_name = ?"
+		args = append(args, filter.AgentName)
+	}
+	if filter.EventType != "" {
+		query += " AND event_type = ?"
+		args = append(args, filter.EventType)
+	}
+	if filter.Since != "" {
+		query += " AND timestamp >= ?"
+		args = append(args, filter.Since)
+	}
+
+	query += " ORDER BY timestamp DESC"
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	query += " LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var entries []ActivityEntry
+	for rows.Next() {
+		var e ActivityEntry
+		if err := rows.Scan(&e.ID, &e.Timestamp, &e.AgentName, &e.EventType, &e.Content, &e.Metadata, &e.ChatID); err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
 }
 
 // RegisterAgent upserts an agent definition.
