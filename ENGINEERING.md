@@ -33,8 +33,9 @@ Branch naming: `<agent-name>/<short-description>` (e.g., `atlas/add-auth-middlew
 
 - Write clean, well-structured code.
 - Follow existing patterns in the codebase.
-- Include tests where appropriate.
+- **Write tests for all new functionality** (see Testing section below).
 - Run `go build ./...` and `go vet ./...` locally before committing.
+- Run `go test ./...` to verify all tests pass.
 
 ### 3. Commit and Push
 
@@ -70,9 +71,11 @@ The reviewer should:
 
 ### 6. Wait for CI
 
-CI runs automatically on PRs. Both checks must pass:
+CI runs automatically on PRs. All checks must pass:
 - **Build & Vet** — `go build ./...` and `go vet ./...`
+- **Go Tests** — `go test ./... -v -count=1`
 - **Lint** — `golangci-lint` (v2)
+- **Frontend Build** — `tsc -b --noEmit` and `vite build`
 
 If CI fails, fix the issues and push again. CI typically takes 1-2 minutes.
 
@@ -93,6 +96,58 @@ gh pr merge <number> --squash --delete-branch
 cd ..
 git worktree remove hub-<branch-name>
 ```
+
+## Testing
+
+All changes must include tests. Run tests locally before pushing.
+
+### Go Tests
+
+Tests live alongside the code in `*_test.go` files:
+- `internal/store/store_test.go` — Store CRUD, migrations, constraints
+- `internal/api/api_test.go` — HTTP handler tests via `httptest`
+
+```bash
+# Run all Go tests
+go test ./...
+
+# Run with verbose output
+go test ./... -v
+
+# Run a specific test
+go test ./internal/store -run TestCreateProject -v
+```
+
+Guidelines:
+- Use `t.TempDir()` for database paths (no shared state between tests)
+- Use table-driven tests for validation cases
+- Test both success and error paths
+- No external test dependencies — use only the standard `testing` package
+
+### Playwright E2E Tests
+
+End-to-end tests for the dashboard live in `web/e2e/`:
+- `dashboard.spec.ts` — App loading, tab switching, layout
+- `activity.spec.ts` — Activity feed, connection status
+- `tasks.spec.ts` — Task board, project creation
+
+```bash
+cd web
+
+# Install Playwright browsers (first time only)
+npx playwright install chromium
+
+# Run E2E tests (requires the dashboard to be running on :8080)
+npm run test:e2e
+
+# Run with UI for debugging
+npm run test:e2e:ui
+```
+
+Guidelines:
+- Use resilient locators (`getByRole`, `getByText`, `getByPlaceholder`)
+- Tests should be independent and not depend on execution order
+- Keep tests focused on user-visible behavior, not implementation details
 
 ## Inter-Agent Communication
 

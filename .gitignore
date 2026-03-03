@@ -21,4 +21,8 @@
 # Frontend
 web/node_modules/
 
+# Playwright
+web/test-results/
+web/playwright-report/
+
 .envrc
