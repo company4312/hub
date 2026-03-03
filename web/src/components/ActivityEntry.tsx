@@ -17,6 +17,11 @@ const EVENT_COLORS: Record<EventType, { bg: string; text: string; icon: string }
   pipeline_implement: { bg: "bg-orange-500/20", text: "text-orange-400", icon: "🔨" },
   pipeline_review: { bg: "bg-sky-500/20", text: "text-sky-400", icon: "👀" },
   pipeline_merge: { bg: "bg-emerald-500/20", text: "text-emerald-400", icon: "🔀" },
+  tool_call: { bg: "bg-yellow-500/20", text: "text-yellow-400", icon: "🔧" },
+  tool_start: { bg: "bg-yellow-500/20", text: "text-yellow-300", icon: "⚙️" },
+  tool_complete: { bg: "bg-lime-500/20", text: "text-lime-400", icon: "✅" },
+  agent_intent: { bg: "bg-fuchsia-500/20", text: "text-fuchsia-400", icon: "🎯" },
+  agent_reasoning: { bg: "bg-pink-500/20", text: "text-pink-400", icon: "💡" },
   error: { bg: "bg-red-500/20", text: "text-red-400", icon: "❌" },
 };
 
@@ -94,6 +99,13 @@ function MetadataContext({ eventType, metadata }: { eventType: EventType; metada
         <span className="text-xs text-gray-500">[{metadata.category}]</span>
       ) : null;
     }
+    case "tool_call":
+    case "tool_start":
+    case "tool_complete": {
+      return metadata.tool ? (
+        <span className="text-xs font-mono text-yellow-400/80">{metadata.tool}</span>
+      ) : null;
+    }
     default:
       return null;
   }
@@ -116,12 +128,15 @@ export function ActivityEntry({ timestamp, agentName, eventType, content, metada
   const isResponse = eventType === "message_received";
   // For agent_message, show as an inter-agent conversation
   const isInterAgent = eventType === "agent_message";
+  // Tool-level events get a compact style
+  const isToolEvent = eventType === "tool_call" || eventType === "tool_start" || eventType === "tool_complete";
+  const isThinking = eventType === "agent_reasoning" || eventType === "agent_intent";
 
   return (
-    <div className={`flex items-start gap-3 px-4 py-3 hover:bg-gray-800/50 transition-colors border-b border-gray-800/50 ${isResponse ? "bg-gray-900/30" : ""}`}>
+    <div className={`flex items-start gap-3 px-4 ${isToolEvent ? "py-1.5" : "py-3"} hover:bg-gray-800/50 transition-colors border-b border-gray-800/50 ${isResponse ? "bg-gray-900/30" : ""} ${isToolEvent ? "opacity-70" : ""}`}>
       {/* Agent avatar */}
       <div
-        className={`${agentColor(agentName)} w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-sm font-bold text-white`}
+        className={`${agentColor(agentName)} ${isToolEvent ? "w-5 h-5 text-[10px] mt-0.5" : "w-8 h-8 text-sm"} rounded-full flex items-center justify-center shrink-0 font-bold text-white`}
       >
         {agentName.charAt(0).toUpperCase()}
       </div>
@@ -129,7 +144,7 @@ export function ActivityEntry({ timestamp, agentName, eventType, content, metada
       <div className="flex-1 min-w-0">
         {/* Header row */}
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-semibold text-sm text-gray-100">{agentName}</span>
+          {!isToolEvent && <span className="font-semibold text-sm text-gray-100">{agentName}</span>}
           {isInterAgent && meta.to && (
             <span className="text-xs text-gray-500">→ <span className="text-purple-400 font-medium">{meta.to}</span></span>
           )}
@@ -146,9 +161,11 @@ export function ActivityEntry({ timestamp, agentName, eventType, content, metada
         </div>
 
         {/* Content */}
-        {content && (
+        {content && !isToolEvent && (
           <p className={`mt-1 text-sm whitespace-pre-wrap break-words leading-relaxed ${
-            isResponse ? "text-green-300/90 font-mono" : "text-gray-300 font-mono"
+            isResponse ? "text-green-300/90 font-mono"
+            : isThinking ? "text-pink-300/70 italic"
+            : "text-gray-300 font-mono"
           }`}>
             {content.length > 500 ? content.slice(0, 500) + "…" : content}
           </p>

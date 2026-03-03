@@ -55,6 +55,12 @@ export function ActivityFeed({ entries, connected, selectedAgent, agentTitle }: 
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [paused, setPaused] = useState(false);
+  const [showInternals, setShowInternals] = useState(true);
+
+  const INTERNAL_EVENTS = new Set(["tool_call", "tool_start", "tool_complete", "agent_intent", "agent_reasoning"]);
+  const filteredEntries = showInternals
+    ? entries
+    : entries.filter((e) => !INTERNAL_EVENTS.has(e.event_type));
 
   // Auto-scroll to bottom when new entries arrive
   useEffect(() => {
@@ -93,6 +99,16 @@ export function ActivityFeed({ entries, connected, selectedAgent, agentTitle }: 
         </div>
         <div className="flex items-center gap-3">
           <button
+            onClick={() => setShowInternals((s) => !s)}
+            className={`text-xs px-3 py-1.5 rounded-md font-medium transition-colors ${
+              showInternals
+                ? "bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30"
+                : "bg-gray-800 text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            {showInternals ? "🔧 Internals" : "🔧 Internals"}
+          </button>
+          <button
             onClick={() => setPaused((p) => !p)}
             className={`text-xs px-3 py-1.5 rounded-md font-medium transition-colors ${
               paused
@@ -121,7 +137,7 @@ export function ActivityFeed({ entries, connected, selectedAgent, agentTitle }: 
             No activity yet — waiting for events…
           </div>
         ) : (
-          entries.map((entry) => (
+          filteredEntries.map((entry) => (
             <ActivityEntry
               key={entry.id}
               id={entry.id}
