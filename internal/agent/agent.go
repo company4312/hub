@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,9 @@ import (
 	"github.com/company4312/copilot-telegram-bot/internal/api"
 	"github.com/company4312/copilot-telegram-bot/internal/store"
 )
+
+// memoryMarkerRe matches [MEMORY category="..." source="..."]...[/MEMORY] blocks.
+var memoryMarkerRe = regexp.MustCompile(`(?s)\[MEMORY\s+category="([^"]+)"\s+source="([^"]+)"\](.*?)\[/MEMORY\]`)
 
 // sessionKey uniquely identifies a session by agent name and chat ID.
 type sessionKey struct {
@@ -129,9 +133,37 @@ func (p *Pool) SendMessageTo(ctx context.Context, agentName string, chatID int64
 		}
 	}
 
+	response = p.extractAndSaveMemories(agentName, response)
+
 	p.logActivity(agentName, "message_received", response, "", chatID)
 
 	return response, nil
+}
+
+// extractAndSaveMemories parses [MEMORY ...] markers from a response,
+// saves each valid memory, and returns the response with markers stripped.
+func (p *Pool) extractAndSaveMemories(agentName, response string) string {
+	matches := memoryMarkerRe.FindAllStringSubmatch(response, -1)
+	if len(matches) == 0 {
+		return response
+	}
+	for _, m := range matches {
+		category := strings.TrimSpace(m[1])
+		source := strings.TrimSpace(m[2])
+		content := strings.TrimSpace(m[3])
+		if content == "" {
+			continue
+		}
+		if !store.ValidMemoryCategories[category] {
+			log.Printf("agent %s used invalid memory category %q, skipping", agentName, category)
+			continue
+		}
+		if _, err := p.SaveMemory(agentName, category, content, source); err != nil {
+			log.Printf("failed to save memory for agent %s: %v", agentName, err)
+		}
+	}
+	cleaned := memoryMarkerRe.ReplaceAllString(response, "")
+	return strings.TrimSpace(cleaned)
 }
 
 // SendMessageBetween delivers a message from one agent to another within the same chat.
