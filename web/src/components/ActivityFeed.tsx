@@ -56,17 +56,24 @@ export function ActivityFeed({ entries, connected, selectedAgent, agentTitle }: 
   const containerRef = useRef<HTMLDivElement>(null);
   const [paused, setPaused] = useState(false);
   const [showInternals, setShowInternals] = useState(true);
+  const prevCountRef = useRef<number | null>(null);
 
   const INTERNAL_EVENTS = new Set(["tool_call", "tool_start", "tool_complete", "agent_intent", "agent_reasoning"]);
   const filteredEntries = showInternals
     ? entries
     : entries.filter((e) => !INTERNAL_EVENTS.has(e.event_type));
 
-  // Auto-scroll to bottom when new entries arrive
+  // Auto-scroll only when new entries arrive after initial load
   useEffect(() => {
-    if (!paused && bottomRef.current) {
+    if (prevCountRef.current === null) {
+      // First render — record count but don't scroll
+      prevCountRef.current = entries.length;
+      return;
+    }
+    if (entries.length > prevCountRef.current && !paused && bottomRef.current) {
       bottomRef.current.scrollIntoView({ behavior: "smooth" });
     }
+    prevCountRef.current = entries.length;
   }, [entries.length, paused]);
 
   // Detect manual scroll to auto-pause
