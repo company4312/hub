@@ -93,7 +93,7 @@ export function ActivityFeed({ entries, connected, selectedAgent, agentTitle }: 
   }, [paused]);
 
   return (
-    <div className="flex-1 flex flex-col min-w-0">
+    <div className="flex-1 flex flex-col min-w-0 min-h-0">
       {/* Header */}
       <header className="px-4 py-3 border-b border-gray-800 bg-gray-900/80 backdrop-blur-sm flex items-center justify-between shrink-0">
         <div>

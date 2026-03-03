@@ -29,7 +29,7 @@ export default function App() {
         error={error}
       />
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {/* Tabs */}
         <div className="flex border-b border-gray-800 bg-gray-900/80 shrink-0">
           <button
