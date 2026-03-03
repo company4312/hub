@@ -51,7 +51,7 @@ func TestGetAgents_Empty(t *testing.T) {
 		t.Fatalf("status=%d, want 200", rr.Code)
 	}
 	var agents []map[string]string
-	json.Unmarshal(rr.Body.Bytes(), &agents)
+	_ = json.Unmarshal(rr.Body.Bytes(), &agents)
 	if len(agents) != 0 {
 		t.Errorf("expected 0 agents, got %d", len(agents))
 	}
@@ -59,14 +59,14 @@ func TestGetAgents_Empty(t *testing.T) {
 
 func TestGetAgents_WithRegistered(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.RegisterAgent(store.AgentConfig{Name: "atlas", Title: "Atlas", SystemPrompt: "p", Model: "m"})
+	_ = s.RegisterAgent(store.AgentConfig{Name: "atlas", Title: "Atlas", SystemPrompt: "p", Model: "m"})
 
 	rr := do(t, srv, http.MethodGet, "/api/agents", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d", rr.Code)
 	}
 	var agents []map[string]string
-	json.Unmarshal(rr.Body.Bytes(), &agents)
+	_ = json.Unmarshal(rr.Body.Bytes(), &agents)
 	if len(agents) != 1 || agents[0]["name"] != "atlas" || agents[0]["title"] != "Atlas" {
 		t.Errorf("unexpected agents: %v", agents)
 	}
@@ -87,7 +87,7 @@ func TestCreateMemory(t *testing.T) {
 		t.Fatalf("status=%d, body=%s", rr.Code, rr.Body.String())
 	}
 	var resp map[string]float64
-	json.Unmarshal(rr.Body.Bytes(), &resp)
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
 	if resp["id"] <= 0 {
 		t.Errorf("expected positive id, got %v", resp["id"])
 	}
@@ -129,7 +129,7 @@ func TestCreateProject(t *testing.T) {
 		t.Fatalf("status=%d, body=%s", rr.Code, rr.Body.String())
 	}
 	var resp map[string]string
-	json.Unmarshal(rr.Body.Bytes(), &resp)
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
 	if resp["id"] != "proj-1" {
 		t.Errorf("unexpected id: %v", resp["id"])
 	}
@@ -164,15 +164,15 @@ func TestCreateProject_NameTooLong(t *testing.T) {
 
 func TestListProjects(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.CreateProject(store.Project{ID: "p1", Name: "P1", Status: "active", CreatedBy: "x"})
-	s.CreateProject(store.Project{ID: "p2", Name: "P2", Status: "active", CreatedBy: "x"})
+	_ = s.CreateProject(store.Project{ID: "p1", Name: "P1", Status: "active", CreatedBy: "x"})
+	_ = s.CreateProject(store.Project{ID: "p2", Name: "P2", Status: "active", CreatedBy: "x"})
 
 	rr := do(t, srv, http.MethodGet, "/api/projects", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d", rr.Code)
 	}
 	var projects []map[string]any
-	json.Unmarshal(rr.Body.Bytes(), &projects)
+	_ = json.Unmarshal(rr.Body.Bytes(), &projects)
 	if len(projects) != 2 {
 		t.Errorf("expected 2 projects, got %d", len(projects))
 	}
@@ -182,7 +182,7 @@ func TestListProjects(t *testing.T) {
 
 func TestCreateTaskInProject(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.CreateProject(store.Project{ID: "proj", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateProject(store.Project{ID: "proj", Name: "P", Status: "active", CreatedBy: "x"})
 
 	body := map[string]any{
 		"id":         "task-1",
@@ -195,7 +195,7 @@ func TestCreateTaskInProject(t *testing.T) {
 		t.Fatalf("status=%d, body=%s", rr.Code, rr.Body.String())
 	}
 	var resp map[string]string
-	json.Unmarshal(rr.Body.Bytes(), &resp)
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
 	if resp["id"] != "task-1" {
 		t.Errorf("unexpected id: %v", resp["id"])
 	}
@@ -216,7 +216,7 @@ func TestCreateTask_ProjectNotFound(t *testing.T) {
 
 func TestCreateTask_TitleTooLong(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.CreateProject(store.Project{ID: "proj", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateProject(store.Project{ID: "proj", Name: "P", Status: "active", CreatedBy: "x"})
 
 	long := make([]byte, store.MaxTitleLength+1)
 	for i := range long {
@@ -237,16 +237,16 @@ func TestCreateTask_TitleTooLong(t *testing.T) {
 
 func TestListTasks_FilterByStatus(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
-	s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
-	s.CreateTask(store.Task{ID: "t2", ProjectID: "p", Title: "T2", Status: "in_progress", CreatedBy: "x", Priority: 3})
+	_ = s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateTask(store.Task{ID: "t2", ProjectID: "p", Title: "T2", Status: "in_progress", CreatedBy: "x", Priority: 3})
 
 	rr := do(t, srv, http.MethodGet, "/api/tasks?status=backlog", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d", rr.Code)
 	}
 	var tasks []map[string]any
-	json.Unmarshal(rr.Body.Bytes(), &tasks)
+	_ = json.Unmarshal(rr.Body.Bytes(), &tasks)
 	if len(tasks) != 1 {
 		t.Fatalf("expected 1 task, got %d", len(tasks))
 	}
@@ -259,8 +259,8 @@ func TestListTasks_FilterByStatus(t *testing.T) {
 
 func TestPatchTask(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
-	s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "Old", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "Old", Status: "backlog", CreatedBy: "x", Priority: 3})
 
 	newTitle := "New Title"
 	body := map[string]any{"title": newTitle}
@@ -278,8 +278,8 @@ func TestPatchTask(t *testing.T) {
 
 func TestPatchTask_InvalidStatus(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
-	s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T", Status: "backlog", CreatedBy: "x", Priority: 3})
 
 	body := map[string]any{"status": "invalid_status"}
 	rr := do(t, srv, http.MethodPatch, "/api/tasks/t1", body)
@@ -298,8 +298,8 @@ func TestPatchTask_NotFound(t *testing.T) {
 
 func TestPatchTask_TitleTooLong(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
-	s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T", Status: "backlog", CreatedBy: "x", Priority: 3})
 
 	long := make([]byte, store.MaxTitleLength+1)
 	for i := range long {
@@ -316,8 +316,8 @@ func TestPatchTask_TitleTooLong(t *testing.T) {
 
 func TestAddTaskComment(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
-	s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T", Status: "backlog", CreatedBy: "x", Priority: 3})
 
 	body := map[string]string{"agent_name": "atlas", "content": "looks good"}
 	rr := do(t, srv, http.MethodPost, "/api/tasks/t1/comments", body)
@@ -325,7 +325,7 @@ func TestAddTaskComment(t *testing.T) {
 		t.Fatalf("status=%d, body=%s", rr.Code, rr.Body.String())
 	}
 	var resp map[string]float64
-	json.Unmarshal(rr.Body.Bytes(), &resp)
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
 	if resp["id"] <= 0 {
 		t.Errorf("expected positive id, got %v", resp["id"])
 	}
@@ -344,9 +344,9 @@ func TestAddTaskComment_TaskNotFound(t *testing.T) {
 
 func TestAddTaskDependency(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
-	s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
-	s.CreateTask(store.Task{ID: "t2", ProjectID: "p", Title: "T2", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateTask(store.Task{ID: "t2", ProjectID: "p", Title: "T2", Status: "backlog", CreatedBy: "x", Priority: 3})
 
 	body := map[string]string{"depends_on": "t2"}
 	rr := do(t, srv, http.MethodPost, "/api/tasks/t1/dependencies", body)
@@ -357,8 +357,8 @@ func TestAddTaskDependency(t *testing.T) {
 
 func TestAddTaskDependency_SelfDependency(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
-	s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
 
 	body := map[string]string{"depends_on": "t1"}
 	rr := do(t, srv, http.MethodPost, "/api/tasks/t1/dependencies", body)
@@ -369,8 +369,8 @@ func TestAddTaskDependency_SelfDependency(t *testing.T) {
 
 func TestAddTaskDependency_DepNotFound(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
-	s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
 
 	body := map[string]string{"depends_on": "nonexistent"}
 	rr := do(t, srv, http.MethodPost, "/api/tasks/t1/dependencies", body)
@@ -400,7 +400,7 @@ func TestCreateMemory_ContentTooLong(t *testing.T) {
 
 func TestPatchProject_InvalidStatus(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.CreateProject(store.Project{ID: "p1", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateProject(store.Project{ID: "p1", Name: "P", Status: "active", CreatedBy: "x"})
 
 	body := map[string]string{"status": "bogus"}
 	rr := do(t, srv, http.MethodPatch, "/api/projects/p1", body)
@@ -411,8 +411,8 @@ func TestPatchProject_InvalidStatus(t *testing.T) {
 
 func TestCommentTooLong(t *testing.T) {
 	srv, s := newTestServer(t)
-	s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
-	s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateProject(store.Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateTask(store.Task{ID: "t1", ProjectID: "p", Title: "T", Status: "backlog", CreatedBy: "x", Priority: 3})
 
 	long := make([]byte, store.MaxCommentLength+1)
 	for i := range long {

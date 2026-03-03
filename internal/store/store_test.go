@@ -229,8 +229,8 @@ func TestSaveMemory_And_GetMemories(t *testing.T) {
 
 func TestGetMemories_FilterByCategory(t *testing.T) {
 	s := newTestStore(t)
-	s.SaveMemory(Memory{AgentName: "a", Category: "context", Content: "c1"})
-	s.SaveMemory(Memory{AgentName: "a", Category: "decision", Content: "c2"})
+	_, _ = s.SaveMemory(Memory{AgentName: "a", Category: "context", Content: "c1"})
+	_, _ = s.SaveMemory(Memory{AgentName: "a", Category: "decision", Content: "c2"})
 
 	mems, _ := s.GetMemories(MemoryFilter{AgentName: "a", Category: "decision"})
 	if len(mems) != 1 || mems[0].Content != "c2" {
@@ -240,8 +240,8 @@ func TestGetMemories_FilterByCategory(t *testing.T) {
 
 func TestGetMemories_FilterBySearch(t *testing.T) {
 	s := newTestStore(t)
-	s.SaveMemory(Memory{AgentName: "a", Category: "context", Content: "the quick brown fox"})
-	s.SaveMemory(Memory{AgentName: "a", Category: "context", Content: "lazy dog"})
+	_, _ = s.SaveMemory(Memory{AgentName: "a", Category: "context", Content: "the quick brown fox"})
+	_, _ = s.SaveMemory(Memory{AgentName: "a", Category: "context", Content: "lazy dog"})
 
 	mems, _ := s.GetMemories(MemoryFilter{AgentName: "a", Search: "brown"})
 	if len(mems) != 1 || !strings.Contains(mems[0].Content, "brown") {
@@ -313,8 +313,8 @@ func TestDeleteMemory_WrongAgent(t *testing.T) {
 
 func TestGetMemoriesForPrompt(t *testing.T) {
 	s := newTestStore(t)
-	s.SaveMemory(Memory{AgentName: "a", Category: "context", Content: "important fact", Source: "test"})
-	s.SaveMemory(Memory{AgentName: "a", Category: "decision", Content: "we chose X"})
+	_, _ = s.SaveMemory(Memory{AgentName: "a", Category: "context", Content: "important fact", Source: "test"})
+	_, _ = s.SaveMemory(Memory{AgentName: "a", Category: "decision", Content: "we chose X"})
 
 	prompt, err := s.GetMemoriesForPrompt("a")
 	if err != nil {
@@ -386,9 +386,9 @@ func TestLogActivity_And_GetActivities(t *testing.T) {
 func TestGetActivities_Filters(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UTC().Format(time.RFC3339)
-	s.LogActivity(ActivityEntry{Timestamp: now, AgentName: "a", EventType: "chat", Content: "c1"})
-	s.LogActivity(ActivityEntry{Timestamp: now, AgentName: "b", EventType: "memory_created", Content: "c2"})
-	s.LogActivity(ActivityEntry{Timestamp: now, AgentName: "a", EventType: "memory_created", Content: "c3"})
+	_ = s.LogActivity(ActivityEntry{Timestamp: now, AgentName: "a", EventType: "chat", Content: "c1"})
+	_ = s.LogActivity(ActivityEntry{Timestamp: now, AgentName: "b", EventType: "memory_created", Content: "c2"})
+	_ = s.LogActivity(ActivityEntry{Timestamp: now, AgentName: "a", EventType: "memory_created", Content: "c3"})
 
 	tests := []struct {
 		name   string
@@ -446,8 +446,8 @@ func TestGetProject_NotFound(t *testing.T) {
 
 func TestListProjects(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateProject(Project{ID: "p1", Name: "P1", Status: "active", CreatedBy: "x"})
-	s.CreateProject(Project{ID: "p2", Name: "P2", Status: "active", CreatedBy: "x"})
+	_ = s.CreateProject(Project{ID: "p1", Name: "P1", Status: "active", CreatedBy: "x"})
+	_ = s.CreateProject(Project{ID: "p2", Name: "P2", Status: "active", CreatedBy: "x"})
 
 	projects, err := s.ListProjects()
 	if err != nil {
@@ -465,7 +465,7 @@ func TestListProjects(t *testing.T) {
 
 func TestUpdateProjectStatus(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateProject(Project{ID: "p1", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateProject(Project{ID: "p1", Name: "P", Status: "active", CreatedBy: "x"})
 
 	if err := s.UpdateProjectStatus("p1", "completed"); err != nil {
 		t.Fatal(err)
@@ -499,9 +499,9 @@ func TestValidProjectStatuses(t *testing.T) {
 
 func createTestProjectAndTask(t *testing.T, s *Store) {
 	t.Helper()
-	s.CreateProject(Project{ID: "proj", Name: "Proj", Status: "active", CreatedBy: "cto"})
+	_ = s.CreateProject(Project{ID: "proj", Name: "Proj", Status: "active", CreatedBy: "cto"})
 	assigned := "atlas"
-	s.CreateTask(Task{ID: "task-1", ProjectID: "proj", Title: "Task 1", Status: "backlog", AssignedTo: &assigned, CreatedBy: "cto", Priority: 2})
+	_ = s.CreateTask(Task{ID: "task-1", ProjectID: "proj", Title: "Task 1", Status: "backlog", AssignedTo: &assigned, CreatedBy: "cto", Priority: 2})
 }
 
 func TestCreateTask_And_GetTask(t *testing.T) {
@@ -536,13 +536,13 @@ func TestGetTask_NotFound(t *testing.T) {
 
 func TestListTasks_Filters(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateProject(Project{ID: "p1", Name: "P1", Status: "active", CreatedBy: "x"})
-	s.CreateProject(Project{ID: "p2", Name: "P2", Status: "active", CreatedBy: "x"})
+	_ = s.CreateProject(Project{ID: "p1", Name: "P1", Status: "active", CreatedBy: "x"})
+	_ = s.CreateProject(Project{ID: "p2", Name: "P2", Status: "active", CreatedBy: "x"})
 	a1 := "alice"
 	a2 := "bob"
-	s.CreateTask(Task{ID: "t1", ProjectID: "p1", Title: "T1", Status: "backlog", AssignedTo: &a1, CreatedBy: "x", Priority: 1})
-	s.CreateTask(Task{ID: "t2", ProjectID: "p1", Title: "T2", Status: "in_progress", AssignedTo: &a2, CreatedBy: "x", Priority: 2})
-	s.CreateTask(Task{ID: "t3", ProjectID: "p2", Title: "T3", Status: "backlog", AssignedTo: &a1, CreatedBy: "x", Priority: 3})
+	_ = s.CreateTask(Task{ID: "t1", ProjectID: "p1", Title: "T1", Status: "backlog", AssignedTo: &a1, CreatedBy: "x", Priority: 1})
+	_ = s.CreateTask(Task{ID: "t2", ProjectID: "p1", Title: "T2", Status: "in_progress", AssignedTo: &a2, CreatedBy: "x", Priority: 2})
+	_ = s.CreateTask(Task{ID: "t3", ProjectID: "p2", Title: "T3", Status: "backlog", AssignedTo: &a1, CreatedBy: "x", Priority: 3})
 
 	tests := []struct {
 		name   string
@@ -628,9 +628,9 @@ func TestValidTaskStatuses(t *testing.T) {
 
 func TestAddTaskDependency_And_Get(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateProject(Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
-	s.CreateTask(Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
-	s.CreateTask(Task{ID: "t2", ProjectID: "p", Title: "T2", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateProject(Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateTask(Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateTask(Task{ID: "t2", ProjectID: "p", Title: "T2", Status: "backlog", CreatedBy: "x", Priority: 3})
 
 	if err := s.AddTaskDependency("t1", "t2"); err != nil {
 		t.Fatalf("AddTaskDependency: %v", err)
@@ -646,12 +646,12 @@ func TestAddTaskDependency_And_Get(t *testing.T) {
 
 func TestGetBlockingTasks(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateProject(Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
-	s.CreateTask(Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
-	s.CreateTask(Task{ID: "t2", ProjectID: "p", Title: "T2", Status: "backlog", CreatedBy: "x", Priority: 3})
-	s.CreateTask(Task{ID: "t3", ProjectID: "p", Title: "T3", Status: "done", CreatedBy: "x", Priority: 3})
-	s.AddTaskDependency("t1", "t2")
-	s.AddTaskDependency("t1", "t3")
+	_ = s.CreateProject(Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateTask(Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateTask(Task{ID: "t2", ProjectID: "p", Title: "T2", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateTask(Task{ID: "t3", ProjectID: "p", Title: "T3", Status: "done", CreatedBy: "x", Priority: 3})
+	_ = s.AddTaskDependency("t1", "t2")
+	_ = s.AddTaskDependency("t1", "t3")
 
 	blocking, err := s.GetBlockingTasks("t1")
 	if err != nil {
@@ -665,14 +665,14 @@ func TestGetBlockingTasks(t *testing.T) {
 
 func TestAddTaskDependency_CircularDetection(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateProject(Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
-	s.CreateTask(Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
-	s.CreateTask(Task{ID: "t2", ProjectID: "p", Title: "T2", Status: "backlog", CreatedBy: "x", Priority: 3})
-	s.CreateTask(Task{ID: "t3", ProjectID: "p", Title: "T3", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateProject(Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateTask(Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateTask(Task{ID: "t2", ProjectID: "p", Title: "T2", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateTask(Task{ID: "t3", ProjectID: "p", Title: "T3", Status: "backlog", CreatedBy: "x", Priority: 3})
 
 	// t1 -> t2 -> t3
-	s.AddTaskDependency("t1", "t2")
-	s.AddTaskDependency("t2", "t3")
+	_ = s.AddTaskDependency("t1", "t2")
+	_ = s.AddTaskDependency("t2", "t3")
 
 	// t3 -> t1 would create a cycle.
 	err := s.AddTaskDependency("t3", "t1")
@@ -727,11 +727,11 @@ func TestGetTaskComments_Empty(t *testing.T) {
 
 func TestGetContextBriefing(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateProject(Project{ID: "p", Name: "Test Project", Status: "active", CreatedBy: "cto"})
+	_ = s.CreateProject(Project{ID: "p", Name: "Test Project", Status: "active", CreatedBy: "cto"})
 	assigned := "atlas"
-	s.CreateTask(Task{ID: "t1", ProjectID: "p", Title: "Build tests", Status: "in_progress", AssignedTo: &assigned, CreatedBy: "cto", Priority: 1})
+	_ = s.CreateTask(Task{ID: "t1", ProjectID: "p", Title: "Build tests", Status: "in_progress", AssignedTo: &assigned, CreatedBy: "cto", Priority: 1})
 	now := time.Now().UTC().Format(time.RFC3339)
-	s.LogActivity(ActivityEntry{Timestamp: now, AgentName: "atlas", EventType: "chat", Content: "hi"})
+	_ = s.LogActivity(ActivityEntry{Timestamp: now, AgentName: "atlas", EventType: "chat", Content: "hi"})
 
 	briefing, err := s.GetContextBriefing("atlas")
 	if err != nil {
@@ -774,8 +774,8 @@ func TestForeignKey_TaskWithNonexistentProject(t *testing.T) {
 
 func TestForeignKey_TaskDependencyNonexistentTask(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateProject(Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
-	s.CreateTask(Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
+	_ = s.CreateProject(Project{ID: "p", Name: "P", Status: "active", CreatedBy: "x"})
+	_ = s.CreateTask(Task{ID: "t1", ProjectID: "p", Title: "T1", Status: "backlog", CreatedBy: "x", Priority: 3})
 
 	err := s.AddTaskDependency("t1", "nonexistent")
 	if err == nil {
