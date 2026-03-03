@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Send a message to a company agent via the local API
+# Usage: agent-msg <agent-name> <message>
+#   agent-msg atlas "Implement the FooBar feature"
+
+set -euo pipefail
+
+AGENT="${1:?Usage: agent-msg <agent> <message>}"
+shift
+MESSAGE="$*"
+PORT="${DASHBOARD_PORT:-8080}"
+
+response=$(curl -s -X POST "http://localhost:${PORT}/api/agents/${AGENT}/message" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -n --arg p "$MESSAGE" '{prompt: $p, chat_id: 0}')")
+
+echo "$response" | jq -r '.response // .error // "No response"'

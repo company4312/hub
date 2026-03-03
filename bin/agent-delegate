@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Delegate a task to an agent
+# Usage: agent-delegate <to-agent> <title> <instructions> [priority]
+
+set -euo pipefail
+
+TO="${1:?Usage: agent-delegate <to> <title> <instructions> [priority]}"
+TITLE="${2:?Missing title}"
+INSTRUCTIONS="${3:?Missing instructions}"
+PRIORITY="${4:-2}"
+PORT="${DASHBOARD_PORT:-8080}"
+
+response=$(curl -s -X POST "http://localhost:${PORT}/api/tasks/delegate" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -n \
+    --arg to "$TO" \
+    --arg title "$TITLE" \
+    --arg instr "$INSTRUCTIONS" \
+    --argjson pri "$PRIORITY" \
+    '{from: "cto", to: $to, title: $title, instructions: $instr, priority: $pri}')")
+
+echo "$response" | jq '.'
