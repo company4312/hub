@@ -20,6 +20,11 @@ export type EventType =
   | "pipeline_implement"
   | "pipeline_review"
   | "pipeline_merge"
+  | "tool_call"
+  | "tool_start"
+  | "tool_complete"
+  | "agent_intent"
+  | "agent_reasoning"
   | "error";
 
 export interface ActivityEntry {

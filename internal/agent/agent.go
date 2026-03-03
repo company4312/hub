@@ -114,7 +114,7 @@ func (p *Pool) SendMessageTo(ctx context.Context, agentName string, chatID int64
 
 	p.logActivity(agentName, "message_sent", text, "", chatID)
 
-	response, err := p.sendAndWait(ctx, session, text)
+	response, err := p.sendAndWait(ctx, session, text, agentName, chatID)
 	if err != nil {
 		// If send fails, the session may be stale — clear it and retry once.
 		p.clearSession(agentName, chatID)
@@ -122,7 +122,7 @@ func (p *Pool) SendMessageTo(ctx context.Context, agentName string, chatID int64
 		if err != nil {
 			return "", fmt.Errorf("session retry: %w", err)
 		}
-		response, err = p.sendAndWait(ctx, session, text)
+		response, err = p.sendAndWait(ctx, session, text, agentName, chatID)
 		if err != nil {
 			p.logActivity(agentName, "error", err.Error(), "", chatID)
 			return "", fmt.Errorf("send message: %w", err)
@@ -147,7 +147,8 @@ func (p *Pool) SendMessageBetween(ctx context.Context, fromAgent, toAgent string
 }
 
 // sendAndWait sends a prompt on the session and blocks until "session.idle".
-func (p *Pool) sendAndWait(ctx context.Context, session *copilot.Session, text string) (string, error) {
+// It logs intermediate session events (tool calls, reasoning, intent) to the activity feed.
+func (p *Pool) sendAndWait(ctx context.Context, session *copilot.Session, text string, agentName string, chatID int64) (string, error) {
 	var (
 		response string
 		done     = make(chan struct{})
@@ -159,6 +160,42 @@ func (p *Pool) sendAndWait(ctx context.Context, session *copilot.Session, text s
 		case "assistant.message":
 			if event.Data.Content != nil {
 				response = *event.Data.Content
+			}
+			// Log tool requests within the message.
+			if len(event.Data.ToolRequests) > 0 {
+				for _, tr := range event.Data.ToolRequests {
+					toolName := "unknown"
+					if tr.Name != "" {
+						toolName = tr.Name
+					}
+					p.logActivity(agentName, "tool_call", toolName, jsonMeta(map[string]string{"tool": toolName}), chatID)
+				}
+			}
+		case "tool.execution_start":
+			toolName := ""
+			if event.Data.ToolName != nil {
+				toolName = *event.Data.ToolName
+			}
+			if toolName != "" {
+				p.logActivity(agentName, "tool_start", toolName, jsonMeta(map[string]string{"tool": toolName}), chatID)
+			}
+		case "tool.execution_complete":
+			toolName := ""
+			if event.Data.ToolName != nil {
+				toolName = *event.Data.ToolName
+			}
+			p.logActivity(agentName, "tool_complete", toolName, jsonMeta(map[string]string{"tool": toolName}), chatID)
+		case "assistant.intent":
+			if event.Data.Intent != nil {
+				p.logActivity(agentName, "agent_intent", *event.Data.Intent, "", chatID)
+			}
+		case "assistant.reasoning":
+			if event.Data.ReasoningText != nil && *event.Data.ReasoningText != "" {
+				text := *event.Data.ReasoningText
+				if len(text) > 300 {
+					text = text[:300] + "…"
+				}
+				p.logActivity(agentName, "agent_reasoning", text, "", chatID)
 			}
 		case "session.idle":
 			once.Do(func() { close(done) })
