@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Save a memory to the company database
+# Usage: save-memory <agent-name> <category> <content> [source]
+# Categories: lesson_learned, preference, context, decision, skill, other
+
+set -euo pipefail
+
+AGENT="${1:?Usage: save-memory <agent> <category> <content> [source]}"
+CATEGORY="${2:?Missing category}"
+CONTENT="${3:?Missing content}"
+SOURCE="${4:-agent}"
+PORT="${DASHBOARD_PORT:-8080}"
+
+response=$(curl -s -X POST "http://localhost:${PORT}/api/memories" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -n \
+    --arg agent "$AGENT" \
+    --arg cat "$CATEGORY" \
+    --arg content "$CONTENT" \
+    --arg source "$SOURCE" \
+    '{agent_name: $agent, category: $cat, content: $content, source: $source}')")
+
+echo "$response" | jq -r '.id // .error // "Failed"'
