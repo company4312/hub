@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Check status of a task
+# Usage: task-status <task-id>
+
+set -euo pipefail
+
+TASK_ID="${1:?Usage: task-status <task-id>}"
+PORT="${DASHBOARD_PORT:-8080}"
+
+curl -s "http://localhost:${PORT}/api/tasks/${TASK_ID}/status" | jq .
