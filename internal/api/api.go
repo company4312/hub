@@ -17,9 +17,18 @@ import (
 	"github.com/company4312/copilot-telegram-bot/web"
 )
 
+// AgentPool is the interface the API server uses to interact with agents.
+// It is satisfied by *agent.Pool but kept as an interface to avoid a
+// circular import and to make testing simpler.
+type AgentPool interface {
+	SendMessageTo(ctx context.Context, agentName string, chatID int64, text string) (string, error)
+	DelegateTask(ctx context.Context, fromAgent, toAgent string, chatID int64, projectID, taskID, title, instructions string, priority int) error
+}
+
 // Server is the HTTP API server for the Company4312 dashboard.
 type Server struct {
 	store      *store.Store
+	pool       AgentPool
 	addr       string
 	httpServer *http.Server
 
@@ -27,15 +36,18 @@ type Server struct {
 	clients map[chan store.ActivityEntry]struct{}
 }
 
-// New creates a new API server.
-func New(s *store.Store, addr string) *Server {
+// New creates a new API server. pool may be nil (endpoints that require it
+// will return 503).
+func New(s *store.Store, pool AgentPool, addr string) *Server {
 	srv := &Server{
 		store:   s,
+		pool:    pool,
 		addr:    addr,
 		clients: make(map[chan store.ActivityEntry]struct{}),
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/agents/", srv.handleAgentRoutes)
 	mux.HandleFunc("/api/agents", srv.handleAgents)
 	mux.HandleFunc("/api/activity/stream", srv.handleActivityStream)
 	mux.HandleFunc("/api/activity", srv.handleActivity)
@@ -43,6 +55,7 @@ func New(s *store.Store, addr string) *Server {
 	mux.HandleFunc("/api/memories", srv.handleMemories)
 	mux.HandleFunc("/api/projects/", srv.handleProjectByID)
 	mux.HandleFunc("/api/projects", srv.handleProjects)
+	mux.HandleFunc("/api/tasks/delegate", srv.handleDelegateTask)
 	mux.HandleFunc("/api/tasks/", srv.handleTaskByID)
 	mux.HandleFunc("/api/tasks", srv.handleTasks)
 
@@ -657,6 +670,13 @@ func (srv *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 
 	if len(parts) == 2 {
 		switch parts[1] {
+		case "status":
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			srv.handleTaskStatus(w, r, taskID)
+			return
 		case "dependencies":
 			srv.handleTaskDependencies(w, r, taskID)
 			return
@@ -865,6 +885,127 @@ func (srv *Server) handleTaskComments(w http.ResponseWriter, r *http.Request, ta
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// --- Agent message / delegate handlers ---
+
+func (srv *Server) handleAgentRoutes(w http.ResponseWriter, r *http.Request) {
+	// Routes: /api/agents/{name}/message
+	path := r.URL.Path[len("/api/agents/"):]
+	parts := splitPath(path)
+	if len(parts) == 2 && parts[1] == "message" {
+		srv.handleAgentMessage(w, r, parts[0])
+		return
+	}
+	http.Error(w, "not found", http.StatusNotFound)
+}
+
+func (srv *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request, agentName string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if srv.pool == nil {
+		http.Error(w, "agent pool not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	var body struct {
+		Prompt string `json:"prompt"`
+		ChatID int64  `json:"chat_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if body.Prompt == "" {
+		http.Error(w, "prompt is required", http.StatusBadRequest)
+		return
+	}
+
+	response, err := srv.pool.SendMessageTo(r.Context(), agentName, body.ChatID, body.Prompt)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("send message to %s: %v", agentName, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"response": response,
+		"agent":    agentName,
+	})
+}
+
+func (srv *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if srv.pool == nil {
+		http.Error(w, "agent pool not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	var body struct {
+		From         string `json:"from"`
+		To           string `json:"to"`
+		ProjectID    string `json:"project_id"`
+		Title        string `json:"title"`
+		Instructions string `json:"instructions"`
+		Priority     int    `json:"priority"`
+		ChatID       int64  `json:"chat_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if body.From == "" || body.To == "" || body.Title == "" || body.Instructions == "" {
+		http.Error(w, "from, to, title, and instructions are required", http.StatusBadRequest)
+		return
+	}
+	if body.Priority < 1 || body.Priority > 4 {
+		body.Priority = 2
+	}
+
+	taskID := fmt.Sprintf("task-%s-%d", body.To, time.Now().UnixMilli())
+
+	if err := srv.pool.DelegateTask(r.Context(), body.From, body.To, body.ChatID,
+		body.ProjectID, taskID, body.Title, body.Instructions, body.Priority); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("delegate task: %v", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"task_id": taskID,
+		"status":  "delegated",
+	})
+}
+
+func (srv *Server) handleTaskStatus(w http.ResponseWriter, _ *http.Request, id string) {
+	t, err := srv.store.GetTask(id)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		log.Printf("get task: %v", err)
+		return
+	}
+	if t == nil {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+	assignedTo := ""
+	if t.AssignedTo != nil {
+		assignedTo = *t.AssignedTo
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"task_id":     t.ID,
+		"status":      t.Status,
+		"title":       t.Title,
+		"assigned_to": assignedTo,
+	})
 }
 
 // splitPath splits a URL path segment on "/" and filters empty parts.

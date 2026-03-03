@@ -22,7 +22,7 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
-	srv := New(s, ":0")
+	srv := New(s, nil, ":0")
 	return srv, s
 }
 

@@ -67,7 +67,7 @@ func main() {
 	if dashPort == "" {
 		dashPort = "8080"
 	}
-	apiSrv := api.New(s, ":"+dashPort)
+	apiSrv := api.New(s, p, ":"+dashPort)
 	if err := apiSrv.Start(); err != nil {
 		log.Fatalf("start dashboard api: %v", err)
 	}
