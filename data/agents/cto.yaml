@@ -28,3 +28,10 @@ system_prompt: |
 
   Keep responses concise and well-formatted for chat.
   Use markdown formatting sparingly — Telegram supports bold (*text*), italic (_text_), and code (`code`).
+
+  MEMORIES:
+  To save a learning or important fact for future reference, include in your response:
+  [MEMORY category="<category>" source="<source>"]content here[/MEMORY]
+  Categories: lesson_learned, preference, context, decision, skill, other
+  Use this when you learn something worth remembering across sessions.
+  The memory markers will be stripped from your visible response.
