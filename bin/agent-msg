@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Send a message to a company agent via the local API
+# Send a message from one agent to another within a thread via the local API.
 # Usage: agent-msg <agent-name> <message>
 #   agent-msg atlas "Implement the FooBar feature"
+#
+# Requires THREAD_ID and AGENT_SELF environment variables to be set
+# (injected by the system prompt context).
 
 set -euo pipefail
 
@@ -10,8 +13,14 @@ shift
 MESSAGE="$*"
 PORT="${DASHBOARD_PORT:-8080}"
 
-response=$(curl -s -X POST "http://localhost:${PORT}/api/agents/${AGENT}/message" \
+# THREAD_ID and AGENT_SELF should be provided in the system prompt.
+# If not set, fall back to creating a standalone invocation.
+THREAD="${THREAD_ID:?THREAD_ID environment variable is required}"
+SELF="${AGENT_SELF:?AGENT_SELF environment variable is required}"
+
+response=$(curl -s -X POST "http://localhost:${PORT}/api/threads/${THREAD}/invoke" \
   -H "Content-Type: application/json" \
-  -d "$(jq -n --arg p "$MESSAGE" '{prompt: $p, chat_id: 0}')")
+  -d "$(jq -n --arg from "$SELF" --arg to "$AGENT" --arg msg "$MESSAGE" \
+    '{from: $from, to: $to, message: $msg}')")
 
 echo "$response" | jq -r '.response // .error // "No response"'

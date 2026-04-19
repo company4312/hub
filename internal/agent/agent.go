@@ -8,37 +8,34 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"time"
 
 	copilot "github.com/github/copilot-sdk/go"
+	"github.com/google/uuid"
 
-	"github.com/company4312/copilot-telegram-bot/internal/api"
 	"github.com/company4312/copilot-telegram-bot/internal/store"
 )
 
 // memoryMarkerRe matches [MEMORY category="..." source="..."]...[/MEMORY] blocks.
 var memoryMarkerRe = regexp.MustCompile(`(?s)\[MEMORY\s+category="([^"]+)"\s+source="([^"]+)"\](.*?)\[/MEMORY\]`)
 
-// sessionKey uniquely identifies a session by agent name and chat ID.
+// sessionKey uniquely identifies a session by agent name and thread ID.
 type sessionKey struct {
-	agent  string
-	chatID int64
+	agent    string
+	threadID string
 }
+
+// BroadcastFunc is the callback signature for broadcasting new messages to SSE clients.
+type BroadcastFunc func(msg store.Message)
 
 // Pool manages multiple named agents and their Copilot sessions.
 type Pool struct {
-	client     *copilot.Client
-	store      *store.Store
-	configDir  string
-	sessions   map[sessionKey]*copilot.Session
-	mu         sync.Mutex
-	apiServer  *api.Server
-	notifyFunc func(chatID int64, text string) // callback to send messages to a chat
-}
-
-// SetAPIServer sets the API server used for broadcasting activity events.
-func (p *Pool) SetAPIServer(srv *api.Server) {
-	p.apiServer = srv
+	client        *copilot.Client
+	store         *store.Store
+	configDir     string
+	sessions      map[sessionKey]*copilot.Session
+	mu            sync.Mutex
+	notifyFunc    func(chatID int64, text string)
+	broadcastFunc BroadcastFunc
 }
 
 // SetNotifyFunc sets the callback used to send messages to a Telegram chat.
@@ -46,21 +43,15 @@ func (p *Pool) SetNotifyFunc(fn func(chatID int64, text string)) {
 	p.notifyFunc = fn
 }
 
-// logActivity records an activity entry and broadcasts it to SSE clients.
-func (p *Pool) logActivity(agentName, eventType, content, metadata string, chatID int64) {
-	entry := store.ActivityEntry{
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		AgentName: agentName,
-		EventType: eventType,
-		Content:   content,
-		Metadata:  metadata,
-		ChatID:    chatID,
-	}
-	if err := p.store.LogActivity(entry); err != nil {
-		log.Printf("log activity: %v", err)
-	}
-	if p.apiServer != nil {
-		p.apiServer.Broadcast(entry)
+// SetBroadcastFunc sets the callback used to broadcast new messages to SSE clients.
+func (p *Pool) SetBroadcastFunc(fn BroadcastFunc) {
+	p.broadcastFunc = fn
+}
+
+// broadcast sends a message to SSE clients if a broadcast function is set.
+func (p *Pool) broadcast(msg store.Message) {
+	if p.broadcastFunc != nil {
+		p.broadcastFunc(msg)
 	}
 }
 
@@ -99,45 +90,139 @@ func (p *Pool) Stop() error {
 	return p.client.Stop()
 }
 
-// SendMessage sends a user message to the active agent for the given chat
-// and returns the assistant's full response text.
-func (p *Pool) SendMessage(ctx context.Context, chatID int64, text string) (string, error) {
-	agentName, err := p.store.GetActiveAgent(chatID)
+// HandleUserMessage routes a Telegram message to the entry-point agent (CTO).
+// It reuses the active thread for the chat if one exists, otherwise creates a new one.
+func (p *Pool) HandleUserMessage(ctx context.Context, chatID int64, text string) (string, string, error) {
+	// Try to reuse the active thread for this chat.
+	existing, err := p.store.GetActiveThread(chatID)
 	if err != nil {
-		return "", fmt.Errorf("get active agent: %w", err)
+		return "", "", fmt.Errorf("get active thread: %w", err)
 	}
-	return p.SendMessageTo(ctx, agentName, chatID, text)
+
+	var threadID string
+	if existing != nil {
+		threadID = existing.ID
+		_ = p.store.TouchThread(threadID)
+	} else {
+		// Create a new thread.
+		threadID = uuid.New().String()
+		title := text
+		if len(title) > 80 {
+			title = title[:80] + "…"
+		}
+		if err := p.store.CreateThread(store.Thread{
+			ID:     threadID,
+			ChatID: chatID,
+			Title:  title,
+			Status: "active",
+		}); err != nil {
+			return "", "", fmt.Errorf("create thread: %w", err)
+		}
+	}
+
+	// Add user message.
+	userMsgID, err := p.store.AddMessage(store.Message{
+		ThreadID:    threadID,
+		FromName:    "user",
+		Content:     text,
+		MessageType: "user_message",
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("add user message: %w", err)
+	}
+
+	// Broadcast user message.
+	if userMsg, err := p.store.GetMessage(userMsgID); err == nil && userMsg != nil {
+		p.broadcast(*userMsg)
+	}
+
+	// Route to CTO (entry-point agent).
+	agentName := "cto"
+	response, responseMsgID, err := p.routeToAgent(ctx, threadID, agentName, text, &userMsgID)
+	if err != nil {
+		// Retry once on stale session.
+		p.clearSession(agentName, threadID)
+		response, responseMsgID, err = p.routeToAgent(ctx, threadID, agentName, text, &userMsgID)
+		if err != nil {
+			return threadID, "", fmt.Errorf("send to agent: %w", err)
+		}
+	}
+
+	_ = responseMsgID // used for future features
+	return threadID, response, nil
 }
 
-// SendMessageTo sends a user message to a specific named agent for the given chat.
-func (p *Pool) SendMessageTo(ctx context.Context, agentName string, chatID int64, text string) (string, error) {
-	session, err := p.getOrCreateSession(ctx, agentName, chatID)
+// InvokeAgent sends a message from one agent to another within a thread.
+// This is the core inter-agent communication primitive.
+func (p *Pool) InvokeAgent(ctx context.Context, threadID, fromAgent, toAgent, text string, parentMsgID *int64) (string, error) {
+	// Record the invocation message.
+	invokeMsgID, err := p.store.AddMessage(store.Message{
+		ThreadID:        threadID,
+		FromName:        fromAgent,
+		ToName:          toAgent,
+		Content:         text,
+		MessageType:     "agent_message",
+		ParentMessageID: parentMsgID,
+	})
 	if err != nil {
-		return "", fmt.Errorf("session setup: %w", err)
+		return "", fmt.Errorf("add invoke message: %w", err)
+	}
+	if invokeMsg, err := p.store.GetMessage(invokeMsgID); err == nil && invokeMsg != nil {
+		p.broadcast(*invokeMsg)
 	}
 
-	p.logActivity(agentName, "message_sent", text, "", chatID)
+	// Prefix the message with sender identity.
+	fromCfg, err := p.store.GetAgent(fromAgent)
+	if err != nil || fromCfg == nil {
+		return "", fmt.Errorf("unknown sender agent: %s", fromAgent)
+	}
+	prefixed := fmt.Sprintf("[Message from %s (%s)]\n\n%s", fromCfg.Name, fromCfg.Title, text)
 
-	response, err := p.sendAndWait(ctx, session, text, agentName, chatID)
+	// Route to the target agent.
+	response, _, err := p.routeToAgent(ctx, threadID, toAgent, prefixed, &invokeMsgID)
 	if err != nil {
-		// If send fails, the session may be stale — clear it and retry once.
-		p.clearSession(agentName, chatID)
-		session, err = p.getOrCreateSession(ctx, agentName, chatID)
+		// Retry once on stale session.
+		p.clearSession(toAgent, threadID)
+		response, _, err = p.routeToAgent(ctx, threadID, toAgent, prefixed, &invokeMsgID)
 		if err != nil {
-			return "", fmt.Errorf("session retry: %w", err)
+			return "", fmt.Errorf("send to agent %s: %w", toAgent, err)
 		}
-		response, err = p.sendAndWait(ctx, session, text, agentName, chatID)
-		if err != nil {
-			p.logActivity(agentName, "error", err.Error(), "", chatID)
-			return "", fmt.Errorf("send message: %w", err)
-		}
+	}
+
+	return response, nil
+}
+
+// routeToAgent sends a prompt to an agent's session, records the response as a message,
+// and returns the response text and message ID.
+func (p *Pool) routeToAgent(ctx context.Context, threadID, agentName, prompt string, parentMsgID *int64) (string, int64, error) {
+	session, err := p.getOrCreateSession(ctx, agentName, threadID)
+	if err != nil {
+		return "", 0, fmt.Errorf("session setup: %w", err)
+	}
+
+	response, err := p.sendAndWait(ctx, session, prompt, agentName, threadID)
+	if err != nil {
+		return "", 0, err
 	}
 
 	response = p.extractAndSaveMemories(agentName, response)
 
-	p.logActivity(agentName, "message_received", response, "", chatID)
+	// Record the response message.
+	msgID, err := p.store.AddMessage(store.Message{
+		ThreadID:         threadID,
+		FromName:         agentName,
+		Content:          response,
+		MessageType:      "agent_message",
+		CopilotSessionID: session.SessionID,
+		ParentMessageID:  parentMsgID,
+	})
+	if err != nil {
+		log.Printf("failed to record response message: %v", err)
+	} else if msg, err := p.store.GetMessage(msgID); err == nil && msg != nil {
+		p.broadcast(*msg)
+	}
 
-	return response, nil
+	return response, msgID, nil
 }
 
 // extractAndSaveMemories parses [MEMORY ...] markers from a response,
@@ -166,21 +251,9 @@ func (p *Pool) extractAndSaveMemories(agentName, response string) string {
 	return strings.TrimSpace(cleaned)
 }
 
-// SendMessageBetween delivers a message from one agent to another within the same chat.
-// The message is prefixed with the sender's identity so the recipient knows who is talking.
-func (p *Pool) SendMessageBetween(ctx context.Context, fromAgent, toAgent string, chatID int64, text string) (string, error) {
-	fromCfg, err := p.store.GetAgent(fromAgent)
-	if err != nil || fromCfg == nil {
-		return "", fmt.Errorf("unknown sender agent: %s", fromAgent)
-	}
-	prefixed := fmt.Sprintf("[Message from %s (%s)]\n\n%s", fromCfg.Name, fromCfg.Title, text)
-	p.logActivity(fromAgent, "agent_message", text, jsonMeta(map[string]string{"to": toAgent}), chatID)
-	return p.SendMessageTo(ctx, toAgent, chatID, prefixed)
-}
-
 // sendAndWait sends a prompt on the session and blocks until "session.idle".
-// It logs intermediate session events (tool calls, reasoning, intent) to the activity feed.
-func (p *Pool) sendAndWait(ctx context.Context, session *copilot.Session, text string, agentName string, chatID int64) (string, error) {
+// It logs intermediate session events to the session_events table.
+func (p *Pool) sendAndWait(ctx context.Context, session *copilot.Session, text string, agentName string, threadID string) (string, error) {
 	var (
 		response string
 		done     = make(chan struct{})
@@ -188,48 +261,63 @@ func (p *Pool) sendAndWait(ctx context.Context, session *copilot.Session, text s
 	)
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
-		switch event.Type {
-		case "assistant.message":
-			if event.Data.Content != nil {
-				response = *event.Data.Content
-			}
-			// Log tool requests within the message.
-			if len(event.Data.ToolRequests) > 0 {
-				for _, tr := range event.Data.ToolRequests {
-					toolName := "unknown"
-					if tr.Name != "" {
-						toolName = tr.Name
-					}
-					p.logActivity(agentName, "tool_call", toolName, jsonMeta(map[string]string{"tool": toolName}), chatID)
+		switch d := event.Data.(type) {
+		case *copilot.AssistantMessageData:
+			response = d.Content
+			for _, tr := range d.ToolRequests {
+				toolName := tr.Name
+				if toolName == "" {
+					toolName = "unknown"
 				}
+				_ = p.store.AddSessionEvent(store.SessionEvent{
+					CopilotSessionID: session.SessionID,
+					ThreadID:         threadID,
+					AgentName:        agentName,
+					EventType:        "tool_call",
+					Content:          toolName,
+					Metadata:         jsonMeta(map[string]string{"tool": toolName}),
+				})
 			}
-		case "tool.execution_start":
-			toolName := ""
-			if event.Data.ToolName != nil {
-				toolName = *event.Data.ToolName
+		case *copilot.ToolExecutionStartData:
+			_ = p.store.AddSessionEvent(store.SessionEvent{
+				CopilotSessionID: session.SessionID,
+				ThreadID:         threadID,
+				AgentName:        agentName,
+				EventType:        "tool_start",
+				Content:          d.ToolName,
+				Metadata:         jsonMeta(map[string]string{"tool": d.ToolName}),
+			})
+		case *copilot.ToolExecutionCompleteData:
+			_ = p.store.AddSessionEvent(store.SessionEvent{
+				CopilotSessionID: session.SessionID,
+				ThreadID:         threadID,
+				AgentName:        agentName,
+				EventType:        "tool_complete",
+				Content:          d.ToolCallID,
+			})
+		case *copilot.AssistantIntentData:
+			_ = p.store.AddSessionEvent(store.SessionEvent{
+				CopilotSessionID: session.SessionID,
+				ThreadID:         threadID,
+				AgentName:        agentName,
+				EventType:        "intent",
+				Content:          d.Intent,
+			})
+		case *copilot.AssistantReasoningData:
+			text := d.Content
+			if len(text) > 300 {
+				text = text[:300] + "…"
 			}
-			if toolName != "" {
-				p.logActivity(agentName, "tool_start", toolName, jsonMeta(map[string]string{"tool": toolName}), chatID)
+			if text != "" {
+				_ = p.store.AddSessionEvent(store.SessionEvent{
+					CopilotSessionID: session.SessionID,
+					ThreadID:         threadID,
+					AgentName:        agentName,
+					EventType:        "reasoning",
+					Content:          text,
+				})
 			}
-		case "tool.execution_complete":
-			toolName := ""
-			if event.Data.ToolName != nil {
-				toolName = *event.Data.ToolName
-			}
-			p.logActivity(agentName, "tool_complete", toolName, jsonMeta(map[string]string{"tool": toolName}), chatID)
-		case "assistant.intent":
-			if event.Data.Intent != nil {
-				p.logActivity(agentName, "agent_intent", *event.Data.Intent, "", chatID)
-			}
-		case "assistant.reasoning":
-			if event.Data.ReasoningText != nil && *event.Data.ReasoningText != "" {
-				text := *event.Data.ReasoningText
-				if len(text) > 300 {
-					text = text[:300] + "…"
-				}
-				p.logActivity(agentName, "agent_reasoning", text, "", chatID)
-			}
-		case "session.idle":
+		case *copilot.SessionIdleData:
 			once.Do(func() { close(done) })
 		}
 	})
@@ -247,22 +335,12 @@ func (p *Pool) sendAndWait(ctx context.Context, session *copilot.Session, text s
 	}
 }
 
-// ResetSession destroys and removes the session for the active agent in a chat.
-func (p *Pool) ResetSession(ctx context.Context, chatID int64) error {
-	agentName, err := p.store.GetActiveAgent(chatID)
-	if err != nil {
-		return fmt.Errorf("get active agent: %w", err)
-	}
-	p.clearSession(agentName, chatID)
-	return p.store.DeleteSession(chatID, agentName)
-}
-
 // getOrCreateSession returns the cached session or creates/resumes one.
-func (p *Pool) getOrCreateSession(ctx context.Context, agentName string, chatID int64) (*copilot.Session, error) {
+func (p *Pool) getOrCreateSession(ctx context.Context, agentName string, threadID string) (*copilot.Session, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	key := sessionKey{agent: agentName, chatID: chatID}
+	key := sessionKey{agent: agentName, threadID: threadID}
 
 	if session, ok := p.sessions[key]; ok {
 		return session, nil
@@ -278,7 +356,7 @@ func (p *Pool) getOrCreateSession(ctx context.Context, agentName string, chatID 
 	}
 
 	// Try to resume a persisted session.
-	sessionID, err := p.store.GetSessionID(chatID, agentName)
+	sessionID, err := p.store.GetThreadSessionID(threadID, agentName)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +370,7 @@ func (p *Pool) getOrCreateSession(ctx context.Context, agentName string, chatID 
 			p.sessions[key] = session
 			return session, nil
 		}
-		log.Printf("failed to resume session %s for agent %s chat %d, creating new: %v", sessionID, agentName, chatID, err)
+		log.Printf("failed to resume session %s for agent %s thread %s, creating new: %v", sessionID, agentName, threadID, err)
 	}
 
 	// Create a fresh session.
@@ -306,13 +384,23 @@ func (p *Pool) getOrCreateSession(ctx context.Context, agentName string, chatID 
 		systemPrompt += "\n\n" + memories
 	}
 
-	// Inject context briefing (assigned tasks, projects, recent activity).
+	// Inject context briefing (assigned tasks, projects).
 	briefing, err := p.store.GetContextBriefing(agentName)
 	if err != nil {
 		log.Printf("failed to load context for agent %s: %v", agentName, err)
 	} else if briefing != "" {
 		systemPrompt += "\n\n" + briefing
 	}
+
+	// Inject thread context so tools can identify the current thread and agent.
+	systemPrompt += fmt.Sprintf("\n\n[Session Context]\n"+
+		"Your agent name is: %s\n"+
+		"Current thread ID: %s\n\n"+
+		"IMPORTANT: Before calling any company tool (bin/agent-msg, bin/agent-delegate, etc.), "+
+		"you MUST export these environment variables:\n"+
+		"  export THREAD_ID=%q AGENT_SELF=%q\n"+
+		"This ensures your messages are tracked in the correct conversation thread.",
+		agentName, threadID, threadID, agentName)
 
 	session, err := p.client.CreateSession(ctx, &copilot.SessionConfig{
 		Model:               cfg.Model,
@@ -326,60 +414,49 @@ func (p *Pool) getOrCreateSession(ctx context.Context, agentName string, chatID 
 		return nil, err
 	}
 
-	if err := p.store.SaveSession(chatID, agentName, session.SessionID); err != nil {
-		log.Printf("failed to persist session for agent %s chat %d: %v", agentName, chatID, err)
+	if err := p.store.SaveThreadSession(threadID, agentName, session.SessionID); err != nil {
+		log.Printf("failed to persist session for agent %s thread %s: %v", agentName, threadID, err)
 	}
 
 	p.sessions[key] = session
-	p.logActivity(agentName, "session_created", fmt.Sprintf("session %s created", session.SessionID), "", chatID)
 	return session, nil
 }
 
 // clearSession removes a session from the in-memory cache and destroys it.
-func (p *Pool) clearSession(agentName string, chatID int64) {
+func (p *Pool) clearSession(agentName string, threadID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	key := sessionKey{agent: agentName, chatID: chatID}
+	key := sessionKey{agent: agentName, threadID: threadID}
 	if session, ok := p.sessions[key]; ok {
 		_ = session.Destroy()
 		delete(p.sessions, key)
-		p.logActivity(agentName, "session_destroyed", "session destroyed", "", chatID)
 	}
 }
 
-// SaveMemory stores a memory for an agent, logs activity, and broadcasts.
+// SaveMemory stores a memory for an agent.
 func (p *Pool) SaveMemory(agentName, category, content, source string) (int64, error) {
-	id, err := p.store.SaveMemory(store.Memory{
+	return p.store.SaveMemory(store.Memory{
 		AgentName: agentName,
 		Category:  category,
 		Content:   content,
 		Source:    source,
 	})
-	if err != nil {
-		return 0, err
-	}
-	p.logActivity(agentName, "memory_created", content, jsonMeta(map[string]string{"category": category, "source": source}), 0)
-	return id, nil
 }
 
 // CreateProject creates a new project on behalf of an agent.
 func (p *Pool) CreateProject(agentName, id, name, description string) error {
-	if err := p.store.CreateProject(store.Project{
+	return p.store.CreateProject(store.Project{
 		ID:          id,
 		Name:        name,
 		Description: description,
 		Status:      "active",
 		CreatedBy:   agentName,
-	}); err != nil {
-		return err
-	}
-	p.logActivity(agentName, "project_created", fmt.Sprintf("created project %s: %s", id, name), jsonMeta(map[string]string{"project_id": id}), 0)
-	return nil
+	})
 }
 
 // CreateTask creates a new task in a project on behalf of an agent.
 func (p *Pool) CreateTask(agentName, projectID, taskID, title, description string, priority int) error {
-	if err := p.store.CreateTask(store.Task{
+	return p.store.CreateTask(store.Task{
 		ID:          taskID,
 		ProjectID:   projectID,
 		Title:       title,
@@ -387,14 +464,10 @@ func (p *Pool) CreateTask(agentName, projectID, taskID, title, description strin
 		Status:      "backlog",
 		CreatedBy:   agentName,
 		Priority:    priority,
-	}); err != nil {
-		return err
-	}
-	p.logActivity(agentName, "task_created", fmt.Sprintf("created task %s: %s", taskID, title), jsonMeta(map[string]string{"project_id": projectID, "task_id": taskID}), 0)
-	return nil
+	})
 }
 
-// UpdateTaskStatus updates a task's status, logs activity, and adds a comment.
+// UpdateTaskStatus updates a task's status and adds a comment.
 func (p *Pool) UpdateTaskStatus(agentName, taskID, newStatus string) error {
 	if !store.ValidTaskStatuses[newStatus] {
 		return fmt.Errorf("invalid task status: %s", newStatus)
@@ -408,11 +481,10 @@ func (p *Pool) UpdateTaskStatus(agentName, taskID, newStatus string) error {
 		AgentName: agentName,
 		Content:   comment,
 	})
-	p.logActivity(agentName, "task_status_changed", comment, jsonMeta(map[string]string{"task_id": taskID, "status": newStatus}), 0)
 	return nil
 }
 
-// AssignTask assigns a task to an agent and logs the activity.
+// AssignTask assigns a task to an agent.
 func (p *Pool) AssignTask(agentName, taskID, assignee string) error {
 	t, err := p.store.GetTask(taskID)
 	if err != nil {
@@ -422,70 +494,46 @@ func (p *Pool) AssignTask(agentName, taskID, assignee string) error {
 		return fmt.Errorf("task %s not found", taskID)
 	}
 	t.AssignedTo = &assignee
-	if err := p.store.UpdateTask(*t); err != nil {
-		return err
-	}
-	p.logActivity(agentName, "task_assigned", fmt.Sprintf("assigned task %s to %s", taskID, assignee), jsonMeta(map[string]string{"task_id": taskID, "assignee": assignee}), 0)
-	return nil
+	return p.store.UpdateTask(*t)
 }
 
-// CommentOnTask adds a comment on a task and logs the activity.
+// CommentOnTask adds a comment on a task.
 func (p *Pool) CommentOnTask(agentName, taskID, comment string) error {
 	_, err := p.store.AddTaskComment(store.TaskComment{
 		TaskID:    taskID,
 		AgentName: agentName,
 		Content:   comment,
 	})
-	if err != nil {
-		return err
-	}
-	p.logActivity(agentName, "task_comment", comment, jsonMeta(map[string]string{"task_id": taskID}), 0)
-	return nil
+	return err
 }
 
-// DelegateTask creates a task, assigns it to an agent, and runs the full
-// engineering pipeline in a background goroutine:
-// 1. Worker implements the change and opens a PR
-// 2. Reviewer reviews the PR
-// 3. CI checks are verified
-// 4. PR is merged
-// 5. Originating chat is notified
-func (p *Pool) DelegateTask(ctx context.Context, fromAgent, toAgent string, chatID int64, projectID, taskID, title, instructions string, priority int) error {
-	// Create the task.
+// DelegateTask creates a task, assigns it, and runs the full engineering pipeline.
+func (p *Pool) DelegateTask(ctx context.Context, fromAgent, toAgent string, chatID int64, projectID, taskID, title, instructions string, priority int, threadID string) error {
 	if err := p.CreateTask(fromAgent, projectID, taskID, title, instructions, priority); err != nil {
 		return fmt.Errorf("create task: %w", err)
 	}
-
-	// Assign it.
 	if err := p.AssignTask(fromAgent, taskID, toAgent); err != nil {
 		return fmt.Errorf("assign task: %w", err)
 	}
-
-	// Update status to in_progress.
 	if err := p.UpdateTaskStatus(fromAgent, taskID, "in_progress"); err != nil {
 		return fmt.Errorf("update task status: %w", err)
 	}
 
-	// Pick a reviewer (different from the worker).
 	reviewer := p.pickReviewer(toAgent)
 
-	// Run the full pipeline asynchronously.
-	go p.runTaskPipeline(fromAgent, toAgent, reviewer, chatID, projectID, taskID, title, instructions, priority)
+	go p.runTaskPipeline(fromAgent, toAgent, reviewer, chatID, projectID, taskID, title, instructions, priority, threadID)
 
 	return nil
 }
 
 // pickReviewer selects a review agent that is different from the worker.
-// Prefers sentinel for backend work, atlas for frontend, etc.
 func (p *Pool) pickReviewer(worker string) string {
-	// Preference order for reviewers based on worker.
 	preferences := map[string][]string{
 		"atlas":    {"sentinel", "pixel", "cto"},
 		"pixel":    {"sentinel", "atlas", "cto"},
 		"sentinel": {"atlas", "pixel", "cto"},
 		"cto":      {"sentinel", "atlas", "pixel"},
 	}
-
 	if prefs, ok := preferences[worker]; ok {
 		for _, candidate := range prefs {
 			cfg, err := p.store.GetAgent(candidate)
@@ -498,7 +546,7 @@ func (p *Pool) pickReviewer(worker string) string {
 }
 
 // runTaskPipeline executes the full implement → review → merge workflow.
-func (p *Pool) runTaskPipeline(fromAgent, worker, reviewer string, chatID int64, projectID, taskID, title, instructions string, priority int) {
+func (p *Pool) runTaskPipeline(fromAgent, worker, reviewer string, chatID int64, projectID, taskID, title, instructions string, priority int, threadID string) {
 	workCtx := context.Background()
 
 	notify := func(msg string) {
@@ -528,16 +576,14 @@ func (p *Pool) runTaskPipeline(fromAgent, worker, reviewer string, chatID int64,
 			"Important: use `git` for standard git operations. Use the gh CLI (`unset GITHUB_TOKEN && gh ...`) only for GitHub API operations.",
 		title, taskID, projectID, priority, instructions)
 
-	p.logActivity(worker, "pipeline_implement", fmt.Sprintf("starting implementation of %s", title), jsonMeta(map[string]string{"task_id": taskID}), chatID)
-
-	implResponse, err := p.SendMessageBetween(workCtx, fromAgent, worker, chatID, implementPrompt)
+	implResponse, err := p.InvokeAgent(workCtx, threadID, fromAgent, worker, implementPrompt, nil)
 	if err != nil {
 		fail("implementation", err)
 		return
 	}
 	_ = p.CommentOnTask(worker, taskID, "Implementation complete: "+implResponse)
 
-	// Step 2: Move to review, send PR to reviewer.
+	// Step 2: Move to review.
 	_ = p.UpdateTaskStatus(worker, taskID, "review")
 
 	reviewPrompt := fmt.Sprintf(
@@ -549,17 +595,14 @@ func (p *Pool) runTaskPipeline(fromAgent, worker, reviewer string, chatID int64,
 			"Use `unset GITHUB_TOKEN && gh pr list --state open` to find the PR, then review the diff with `unset GITHUB_TOKEN && gh pr diff <number>`.",
 		worker, title, taskID, worker, implResponse)
 
-	p.logActivity(reviewer, "pipeline_review", fmt.Sprintf("reviewing %s", title), jsonMeta(map[string]string{"task_id": taskID}), chatID)
-
-	reviewResponse, err := p.SendMessageBetween(workCtx, fromAgent, reviewer, chatID, reviewPrompt)
+	reviewResponse, err := p.InvokeAgent(workCtx, threadID, fromAgent, reviewer, reviewPrompt, nil)
 	if err != nil {
 		fail("review", err)
 		return
 	}
 	_ = p.CommentOnTask(reviewer, taskID, "Review: "+reviewResponse)
 
-	// Step 3: Wait for CI and merge.
-	// The worker's PR should already exist. Ask the worker to check CI and merge.
+	// Step 3: Merge.
 	mergePrompt := fmt.Sprintf(
 		"[Merge Request]\nTask: %s\nTask ID: %s\n\n"+
 			"The reviewer (%s) has completed their review:\n%s\n\n"+
@@ -571,9 +614,7 @@ func (p *Pool) runTaskPipeline(fromAgent, worker, reviewer string, chatID int64,
 			"If CI fails, fix the issues and try again.",
 		title, taskID, reviewer, reviewResponse)
 
-	p.logActivity(worker, "pipeline_merge", fmt.Sprintf("merging %s", title), jsonMeta(map[string]string{"task_id": taskID}), chatID)
-
-	mergeResponse, err := p.SendMessageBetween(workCtx, fromAgent, worker, chatID, mergePrompt)
+	mergeResponse, err := p.InvokeAgent(workCtx, threadID, fromAgent, worker, mergePrompt, nil)
 	if err != nil {
 		fail("merge", err)
 		return
@@ -644,4 +685,19 @@ func (p *Pool) GetTaskSummary() (string, error) {
 	}
 
 	return sb.String(), nil
+}
+
+// GetActiveThread returns the most recent active thread for a chat.
+func (p *Pool) GetActiveThread(chatID int64) (*store.Thread, error) {
+	return p.store.GetActiveThread(chatID)
+}
+
+// ListThreads returns threads matching the filter.
+func (p *Pool) ListThreads(filter store.ThreadFilter) ([]store.Thread, error) {
+	return p.store.ListThreads(filter)
+}
+
+// UpdateThreadStatus updates a thread's status.
+func (p *Pool) UpdateThreadStatus(id, status string) error {
+	return p.store.UpdateThreadStatus(id, status)
 }
