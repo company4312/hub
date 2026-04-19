@@ -1,83 +1,40 @@
 export interface Agent {
   name: string;
   title: string;
+  system_prompt: string;
+  model: string;
 }
 
-export type EventType =
-  | "message_sent"
-  | "message_received"
-  | "agent_message"
-  | "session_created"
-  | "session_destroyed"
-  | "memory_created"
-  | "memory_updated"
-  | "memory_deleted"
-  | "project_created"
-  | "task_created"
-  | "task_status_changed"
-  | "task_assigned"
-  | "task_comment"
-  | "pipeline_implement"
-  | "pipeline_review"
-  | "pipeline_merge"
-  | "tool_call"
-  | "tool_start"
-  | "tool_complete"
-  | "agent_intent"
-  | "agent_reasoning"
-  | "error";
-
-export interface ActivityEntry {
+export interface Thread {
   id: string;
-  timestamp: string;
-  agent_name: string;
-  event_type: EventType;
-  content: string;
-  metadata: string;
-  chat_id: string;
-}
-
-export interface Memory {
-  id: number;
-  agent_name: string;
-  category: string;
-  content: string;
-  source: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface Project {
-  id: string;
-  name: string;
-  description: string;
-  status: string;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export type TaskStatus = "backlog" | "todo" | "in_progress" | "review" | "done";
-
-export type TaskPriority = 1 | 2 | 3 | 4;
-
-export interface Task {
-  id: string;
-  project_id: string;
+  chat_id: number;
   title: string;
-  description: string;
-  status: TaskStatus;
-  assigned_to: string | null;
-  created_by: string;
-  priority: TaskPriority;
+  status: string;
   created_at: string;
   updated_at: string;
+  last_message?: Message;
 }
 
-export interface TaskComment {
+export interface Message {
   id: number;
-  task_id: string;
-  agent_name: string;
+  thread_id: string;
+  from_name: string;
+  to_name?: string;
   content: string;
+  message_type: 'user_message' | 'agent_message' | 'system';
+  copilot_session_id?: string;
+  parent_message_id?: number;
+  metadata?: string;
+  created_at: string;
+}
+
+export interface SessionEvent {
+  id: number;
+  copilot_session_id: string;
+  thread_id: string;
+  agent_name: string;
+  event_type: string;
+  content: string;
+  metadata?: string;
   created_at: string;
 }

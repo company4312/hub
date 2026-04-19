@@ -10,10 +10,10 @@ import (
 
 // AgentConfig holds the definition of a named agent.
 type AgentConfig struct {
-	Name         string `yaml:"name"`
-	Title        string `yaml:"title"`
-	SystemPrompt string `yaml:"system_prompt"`
-	Model        string `yaml:"model"`
+	Name         string `json:"name"`
+	Title        string `json:"title"`
+	SystemPrompt string `json:"system_prompt"`
+	Model        string `json:"model"`
 }
 
 // Memory represents a stored memory for an agent.
@@ -35,23 +35,54 @@ type MemoryFilter struct {
 	Limit     int
 }
 
-// ActivityEntry represents a single activity log row.
-type ActivityEntry struct {
-	ID        int64  `json:"id"`
-	Timestamp string `json:"timestamp"`
-	AgentName string `json:"agent_name"`
-	EventType string `json:"event_type"`
-	Content   string `json:"content"`
-	Metadata  string `json:"metadata,omitempty"`
+// Thread represents a conversation thread started by a Telegram message.
+type Thread struct {
+	ID        string `json:"id"`
 	ChatID    int64  `json:"chat_id"`
+	Title     string `json:"title"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
-// ActivityFilter controls which activity entries are returned.
-type ActivityFilter struct {
-	AgentName string
-	EventType string
-	Limit     int
-	Since     string // RFC3339 timestamp
+// ThreadFilter controls which threads are returned.
+type ThreadFilter struct {
+	ChatID int64
+	Status string
+	Limit  int
+}
+
+// Message represents a single message within a thread.
+type Message struct {
+	ID               int64  `json:"id"`
+	ThreadID         string `json:"thread_id"`
+	FromName         string `json:"from_name"`
+	ToName           string `json:"to_name,omitempty"`
+	Content          string `json:"content"`
+	MessageType      string `json:"message_type"` // user_message | agent_message | system
+	CopilotSessionID string `json:"copilot_session_id,omitempty"`
+	ParentMessageID  *int64 `json:"parent_message_id,omitempty"`
+	Metadata         string `json:"metadata,omitempty"`
+	CreatedAt        string `json:"created_at"`
+}
+
+// ValidMessageTypes is the allowed set of message types.
+var ValidMessageTypes = map[string]bool{
+	"user_message":  true,
+	"agent_message": true,
+	"system":        true,
+}
+
+// SessionEvent represents an internal Copilot session event (tool call, reasoning, etc.).
+type SessionEvent struct {
+	ID               int64  `json:"id"`
+	CopilotSessionID string `json:"copilot_session_id"`
+	ThreadID         string `json:"thread_id"`
+	AgentName        string `json:"agent_name"`
+	EventType        string `json:"event_type"`
+	Content          string `json:"content"`
+	Metadata         string `json:"metadata,omitempty"`
+	CreatedAt        string `json:"created_at"`
 }
 
 // Store manages agent definitions and chat-to-session mappings in a local SQLite database.
@@ -339,6 +370,104 @@ var migrations = []migration{
 			}
 			_, err := tx.Exec(`CREATE INDEX idx_task_comments_task ON task_comments(task_id)`)
 			return err
+		},
+	},
+	{
+		version: 6,
+		name:    "add threads, messages, session_events, thread_sessions; drop legacy tables",
+		run: func(tx *sql.Tx) error {
+			// Create threads table.
+			if _, err := tx.Exec(`
+				CREATE TABLE threads (
+					id         TEXT    PRIMARY KEY,
+					chat_id    INTEGER NOT NULL,
+					title      TEXT    NOT NULL,
+					status     TEXT    NOT NULL DEFAULT 'active',
+					created_at TEXT    NOT NULL,
+					updated_at TEXT    NOT NULL
+				)
+			`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`CREATE INDEX idx_threads_chat ON threads(chat_id)`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`CREATE INDEX idx_threads_created ON threads(created_at DESC)`); err != nil {
+				return err
+			}
+
+			// Create messages table.
+			if _, err := tx.Exec(`
+				CREATE TABLE messages (
+					id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+					thread_id           TEXT    NOT NULL REFERENCES threads(id),
+					from_name           TEXT    NOT NULL,
+					to_name             TEXT,
+					content             TEXT    NOT NULL,
+					message_type        TEXT    NOT NULL,
+					copilot_session_id  TEXT,
+					parent_message_id   INTEGER,
+					metadata            TEXT,
+					created_at          TEXT    NOT NULL
+				)
+			`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`CREATE INDEX idx_messages_thread ON messages(thread_id)`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`CREATE INDEX idx_messages_created ON messages(created_at)`); err != nil {
+				return err
+			}
+
+			// Create session_events table (for expand-on-click detail).
+			if _, err := tx.Exec(`
+				CREATE TABLE session_events (
+					id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+					copilot_session_id  TEXT    NOT NULL,
+					thread_id           TEXT    NOT NULL REFERENCES threads(id),
+					agent_name          TEXT    NOT NULL,
+					event_type          TEXT    NOT NULL,
+					content             TEXT    NOT NULL,
+					metadata            TEXT,
+					created_at          TEXT    NOT NULL
+				)
+			`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`CREATE INDEX idx_session_events_session ON session_events(copilot_session_id)`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`CREATE INDEX idx_session_events_thread ON session_events(thread_id)`); err != nil {
+				return err
+			}
+
+			// Create thread_sessions table (replaces old sessions table).
+			if _, err := tx.Exec(`
+				CREATE TABLE thread_sessions (
+					thread_id  TEXT NOT NULL,
+					agent_name TEXT NOT NULL,
+					session_id TEXT NOT NULL,
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL,
+					PRIMARY KEY (thread_id, agent_name)
+				)
+			`); err != nil {
+				return err
+			}
+
+			// Drop legacy tables.
+			if _, err := tx.Exec(`DROP TABLE IF EXISTS activity_log`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`DROP TABLE IF EXISTS sessions`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`DROP TABLE IF EXISTS chat_agents`); err != nil {
+				return err
+			}
+
+			return nil
 		},
 	},
 }
@@ -694,34 +823,48 @@ func (s *Store) GetTaskComments(taskID string) ([]TaskComment, error) {
 	return comments, rows.Err()
 }
 
-// LogActivity inserts an activity log entry.
-func (s *Store) LogActivity(entry ActivityEntry) error {
+// --- Thread CRUD ---
+
+// CreateThread inserts a new thread.
+func (s *Store) CreateThread(t Thread) error {
+	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.Exec(`
-		INSERT INTO activity_log (timestamp, agent_name, event_type, content, metadata, chat_id)
+		INSERT INTO threads (id, chat_id, title, status, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)
-	`, entry.Timestamp, entry.AgentName, entry.EventType, entry.Content, entry.Metadata, entry.ChatID)
+	`, t.ID, t.ChatID, t.Title, t.Status, now, now)
 	return err
 }
 
-// GetActivities returns activity entries matching the given filter.
-func (s *Store) GetActivities(filter ActivityFilter) ([]ActivityEntry, error) {
-	query := "SELECT id, timestamp, agent_name, event_type, content, COALESCE(metadata,''), chat_id FROM activity_log WHERE 1=1"
+// GetThread returns a thread by ID, or nil if not found.
+func (s *Store) GetThread(id string) (*Thread, error) {
+	var t Thread
+	err := s.db.QueryRow(
+		"SELECT id, chat_id, title, status, created_at, updated_at FROM threads WHERE id = ?", id,
+	).Scan(&t.ID, &t.ChatID, &t.Title, &t.Status, &t.CreatedAt, &t.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// ListThreads returns threads matching the filter, newest first.
+func (s *Store) ListThreads(filter ThreadFilter) ([]Thread, error) {
+	query := "SELECT id, chat_id, title, status, created_at, updated_at FROM threads WHERE 1=1"
 	var args []any
 
-	if filter.AgentName != "" {
-		query += " AND agent_name = ?"
-		args = append(args, filter.AgentName)
+	if filter.ChatID != 0 {
+		query += " AND chat_id = ?"
+		args = append(args, filter.ChatID)
 	}
-	if filter.EventType != "" {
-		query += " AND event_type = ?"
-		args = append(args, filter.EventType)
-	}
-	if filter.Since != "" {
-		query += " AND timestamp >= ?"
-		args = append(args, filter.Since)
+	if filter.Status != "" {
+		query += " AND status = ?"
+		args = append(args, filter.Status)
 	}
 
-	query += " ORDER BY timestamp DESC"
+	query += " ORDER BY updated_at DESC"
 
 	limit := filter.Limit
 	if limit <= 0 {
@@ -739,15 +882,201 @@ func (s *Store) GetActivities(filter ActivityFilter) ([]ActivityEntry, error) {
 	}
 	defer func() { _ = rows.Close() }()
 
-	var entries []ActivityEntry
+	var threads []Thread
 	for rows.Next() {
-		var e ActivityEntry
-		if err := rows.Scan(&e.ID, &e.Timestamp, &e.AgentName, &e.EventType, &e.Content, &e.Metadata, &e.ChatID); err != nil {
+		var t Thread
+		if err := rows.Scan(&t.ID, &t.ChatID, &t.Title, &t.Status, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
-		entries = append(entries, e)
+		threads = append(threads, t)
 	}
-	return entries, rows.Err()
+	return threads, rows.Err()
+}
+
+// UpdateThreadStatus updates the status of a thread and bumps updated_at.
+func (s *Store) UpdateThreadStatus(id, status string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.Exec("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?", status, now, id)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("thread %s not found", id)
+	}
+	return nil
+}
+
+// TouchThread bumps the updated_at timestamp for a thread.
+func (s *Store) TouchThread(id string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec("UPDATE threads SET updated_at = ? WHERE id = ?", now, id)
+	return err
+}
+
+// GetActiveThread returns the most recent active thread for a chat, or nil if none.
+func (s *Store) GetActiveThread(chatID int64) (*Thread, error) {
+	var t Thread
+	err := s.db.QueryRow(
+		"SELECT id, chat_id, title, status, created_at, updated_at FROM threads WHERE chat_id = ? AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
+		chatID,
+	).Scan(&t.ID, &t.ChatID, &t.Title, &t.Status, &t.CreatedAt, &t.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// --- Message CRUD ---
+
+// AddMessage inserts a message into a thread and returns its ID.
+func (s *Store) AddMessage(m Message) (int64, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.Exec(`
+		INSERT INTO messages (thread_id, from_name, to_name, content, message_type, copilot_session_id, parent_message_id, metadata, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, m.ThreadID, m.FromName, m.ToName, m.Content, m.MessageType, m.CopilotSessionID, m.ParentMessageID, m.Metadata, now)
+	if err != nil {
+		return 0, err
+	}
+	// Bump thread updated_at.
+	_ = s.TouchThread(m.ThreadID)
+	return result.LastInsertId()
+}
+
+// GetMessage returns a message by ID, or nil if not found.
+func (s *Store) GetMessage(id int64) (*Message, error) {
+	var m Message
+	err := s.db.QueryRow(`
+		SELECT id, thread_id, from_name, COALESCE(to_name,''), content, message_type, COALESCE(copilot_session_id,''), parent_message_id, COALESCE(metadata,''), created_at
+		FROM messages WHERE id = ?
+	`, id).Scan(&m.ID, &m.ThreadID, &m.FromName, &m.ToName, &m.Content, &m.MessageType, &m.CopilotSessionID, &m.ParentMessageID, &m.Metadata, &m.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// ListMessages returns all messages in a thread, ordered by creation time.
+func (s *Store) ListMessages(threadID string) ([]Message, error) {
+	rows, err := s.db.Query(`
+		SELECT id, thread_id, from_name, COALESCE(to_name,''), content, message_type, COALESCE(copilot_session_id,''), parent_message_id, COALESCE(metadata,''), created_at
+		FROM messages WHERE thread_id = ? ORDER BY created_at ASC
+	`, threadID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var messages []Message
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.ThreadID, &m.FromName, &m.ToName, &m.Content, &m.MessageType, &m.CopilotSessionID, &m.ParentMessageID, &m.Metadata, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		messages = append(messages, m)
+	}
+	return messages, rows.Err()
+}
+
+// GetLastMessage returns the most recent message in a thread, or nil if empty.
+func (s *Store) GetLastMessage(threadID string) (*Message, error) {
+	var m Message
+	err := s.db.QueryRow(`
+		SELECT id, thread_id, from_name, COALESCE(to_name,''), content, message_type, COALESCE(copilot_session_id,''), parent_message_id, COALESCE(metadata,''), created_at
+		FROM messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1
+	`, threadID).Scan(&m.ID, &m.ThreadID, &m.FromName, &m.ToName, &m.Content, &m.MessageType, &m.CopilotSessionID, &m.ParentMessageID, &m.Metadata, &m.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// --- Session Events ---
+
+// AddSessionEvent inserts a session event.
+func (s *Store) AddSessionEvent(e SessionEvent) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`
+		INSERT INTO session_events (copilot_session_id, thread_id, agent_name, event_type, content, metadata, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, e.CopilotSessionID, e.ThreadID, e.AgentName, e.EventType, e.Content, e.Metadata, now)
+	return err
+}
+
+// ListSessionEvents returns session events for a copilot session, ordered by time.
+func (s *Store) ListSessionEvents(copilotSessionID string) ([]SessionEvent, error) {
+	rows, err := s.db.Query(`
+		SELECT id, copilot_session_id, thread_id, agent_name, event_type, content, COALESCE(metadata,''), created_at
+		FROM session_events WHERE copilot_session_id = ? ORDER BY created_at ASC
+	`, copilotSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var events []SessionEvent
+	for rows.Next() {
+		var e SessionEvent
+		if err := rows.Scan(&e.ID, &e.CopilotSessionID, &e.ThreadID, &e.AgentName, &e.EventType, &e.Content, &e.Metadata, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// ListSessionEventsByMessage looks up the copilot_session_id of a message and returns its events.
+func (s *Store) ListSessionEventsByMessage(messageID int64) ([]SessionEvent, error) {
+	var sessionID string
+	err := s.db.QueryRow("SELECT COALESCE(copilot_session_id,'') FROM messages WHERE id = ?", messageID).Scan(&sessionID)
+	if err == sql.ErrNoRows || sessionID == "" {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.ListSessionEvents(sessionID)
+}
+
+// --- Thread Sessions ---
+
+// SaveThreadSession upserts a copilot session ID for a thread+agent pair.
+func (s *Store) SaveThreadSession(threadID, agentName, sessionID string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`
+		INSERT INTO thread_sessions (thread_id, agent_name, session_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(thread_id, agent_name) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at
+	`, threadID, agentName, sessionID, now, now)
+	return err
+}
+
+// GetThreadSessionID returns the copilot session ID for a thread+agent, or "" if none.
+func (s *Store) GetThreadSessionID(threadID, agentName string) (string, error) {
+	var sessionID string
+	err := s.db.QueryRow(
+		"SELECT session_id FROM thread_sessions WHERE thread_id = ? AND agent_name = ?", threadID, agentName,
+	).Scan(&sessionID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return sessionID, err
+}
+
+// DeleteThreadSession removes the session mapping for a thread+agent.
+func (s *Store) DeleteThreadSession(threadID, agentName string) error {
+	_, err := s.db.Exec("DELETE FROM thread_sessions WHERE thread_id = ? AND agent_name = ?", threadID, agentName)
+	return err
 }
 
 // RegisterAgent upserts an agent definition.
@@ -797,56 +1126,6 @@ func (s *Store) ListAgents() ([]AgentConfig, error) {
 		agents = append(agents, cfg)
 	}
 	return agents, rows.Err()
-}
-
-// GetActiveAgent returns the active agent name for a chat, defaulting to "cto".
-func (s *Store) GetActiveAgent(chatID int64) (string, error) {
-	var name string
-	err := s.db.QueryRow("SELECT agent_name FROM chat_agents WHERE chat_id = ?", chatID).Scan(&name)
-	if err == sql.ErrNoRows {
-		return "cto", nil
-	}
-	return name, err
-}
-
-// SetActiveAgent sets the active agent for a chat.
-func (s *Store) SetActiveAgent(chatID int64, agentName string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.Exec(`
-		INSERT INTO chat_agents (chat_id, agent_name, updated_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(chat_id) DO UPDATE SET agent_name = excluded.agent_name, updated_at = excluded.updated_at
-	`, chatID, agentName, now)
-	return err
-}
-
-// GetSessionID returns the Copilot session ID for a chat and agent, or "" if none exists.
-func (s *Store) GetSessionID(chatID int64, agentName string) (string, error) {
-	var sessionID string
-	err := s.db.QueryRow(
-		"SELECT session_id FROM sessions WHERE chat_id = ? AND agent_name = ?", chatID, agentName,
-	).Scan(&sessionID)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	return sessionID, err
-}
-
-// SaveSession upserts a session mapping for a chat and agent.
-func (s *Store) SaveSession(chatID int64, agentName string, sessionID string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.Exec(`
-		INSERT INTO sessions (chat_id, agent_name, session_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(chat_id, agent_name) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at
-	`, chatID, agentName, sessionID, now, now)
-	return err
-}
-
-// DeleteSession removes the session mapping for a chat and agent.
-func (s *Store) DeleteSession(chatID int64, agentName string) error {
-	_, err := s.db.Exec("DELETE FROM sessions WHERE chat_id = ? AND agent_name = ?", chatID, agentName)
-	return err
 }
 
 // ValidMemoryCategories is the allowed set of memory categories.
@@ -1030,15 +1309,6 @@ func (s *Store) GetContextBriefing(agentName string) (string, error) {
 		sections = append(sections, projectSummary)
 	}
 
-	// 3. Recent activity involving this agent (last 20 entries).
-	recentActivity, err := s.getRecentActivitySummary(agentName)
-	if err != nil {
-		return "", fmt.Errorf("activity: %w", err)
-	}
-	if recentActivity != "" {
-		sections = append(sections, recentActivity)
-	}
-
 	if len(sections) == 0 {
 		return "", nil
 	}
@@ -1116,48 +1386,6 @@ func (s *Store) getActiveProjectSummary() (string, error) {
 	}
 
 	result := "Active Projects:\n"
-	for _, l := range lines {
-		result += l + "\n"
-	}
-	return result, nil
-}
-
-func (s *Store) getRecentActivitySummary(agentName string) (string, error) {
-	rows, err := s.db.Query(`
-		SELECT agent_name, event_type, content, timestamp FROM activity_log
-		WHERE agent_name = ? OR metadata LIKE ?
-		ORDER BY timestamp DESC LIMIT 20
-	`, agentName, fmt.Sprintf("%%\"%s\"%%", agentName))
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = rows.Close() }()
-
-	var lines []string
-	for rows.Next() {
-		var agent, eventType, content, ts string
-		if err := rows.Scan(&agent, &eventType, &content, &ts); err != nil {
-			return "", err
-		}
-		// Truncate long content.
-		if len(content) > 150 {
-			content = content[:147] + "..."
-		}
-		lines = append(lines, fmt.Sprintf("  - [%s] %s: %s — %s", ts, agent, eventType, content))
-	}
-	if err := rows.Err(); err != nil {
-		return "", err
-	}
-	if len(lines) == 0 {
-		return "", nil
-	}
-
-	// Reverse so oldest is first (chronological).
-	for i, j := 0, len(lines)-1; i < j; i, j = i+1, j-1 {
-		lines[i], lines[j] = lines[j], lines[i]
-	}
-
-	result := "Recent Activity:\n"
 	for _, l := range lines {
 		result += l + "\n"
 	}
