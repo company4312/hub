@@ -233,7 +233,7 @@ func (b *Bot) handleThread(chatID int64, args string) {
 			if t.Status == "active" {
 				status = " (active)"
 			}
-			sb.WriteString(fmt.Sprintf("#%d%s %s — %s\n", i+1, status, t.Title, relativeTime(t.UpdatedAt)))
+			fmt.Fprintf(&sb, "#%d%s %s — %s\n", i+1, status, t.Title, relativeTime(t.UpdatedAt))
 		}
 		b.Reply(chatID, sb.String())
 

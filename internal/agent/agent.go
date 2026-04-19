@@ -84,7 +84,7 @@ func (p *Pool) Stop() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for key, session := range p.sessions {
-		_ = session.Destroy()
+		_ = session.Disconnect()
 		delete(p.sessions, key)
 	}
 	return p.client.Stop()
@@ -428,7 +428,7 @@ func (p *Pool) clearSession(agentName string, threadID string) {
 	defer p.mu.Unlock()
 	key := sessionKey{agent: agentName, threadID: threadID}
 	if session, ok := p.sessions[key]; ok {
-		_ = session.Destroy()
+		_ = session.Disconnect()
 		delete(p.sessions, key)
 	}
 }
